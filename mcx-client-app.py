@@ -6,8 +6,7 @@
 #
 
 TARGETURL="wss://127.0.0.1:5568:5567"
-CERT = "/etc/ssl/certs/mcx.cert.pem"
-TARGETURL="wss://192.168.56.101:5568:5567"
+#CERT = "/etc/ssl/certs/mcx.cert.pem"
 CERT = "mcx.cert.crt"
 
 START_PARAM = "root/UserParameters/GUI/ScriptIO/startscript"
