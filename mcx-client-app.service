@@ -1,0 +1,16 @@
+[Unit]
+Description=Client application for Motorcortex
+After=ethercat.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /usr/local/bin/mcx-client-app.py
+ExecStartPre=/bin/sleep 5
+WorkingDirectory=/home/admin
+User=admin
+Restart=always
+RestartSec=1
+
+[Install]
+WantedBy=motorcortex.service
