@@ -118,7 +118,7 @@ def main(id):
     # Open request connection
     try:
       req, sub = motorcortex.connect(TARGETURL, motorcortex_types, parameter_tree, certificate=CERT, timeout_ms=10000,
-                                     login="", password="")
+                                     login="", password="",reconnect=True)
     except:
       print("Failed to connect to %s. Exiting"%TARGETURL)
       exit(0)
