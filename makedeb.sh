@@ -31,7 +31,7 @@ EOF
 
 # Create postinst file
 cat > ${BUILDFOLDER}/${PACKAGE_NAME}_${VERSION}/DEBIAN/postinst << EOF
-systemctl daemon-reload ${SERVICE}
+systemctl daemon-reload
 systemctl enable ${SERVICE}
 systemctl start ${SERVICE}
 EOF
