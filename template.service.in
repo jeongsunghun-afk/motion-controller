@@ -5,8 +5,8 @@ StartLimitIntervalSec=0
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/python3 /usr/local/bin/mcx-client-app.py
 ExecStartPre=/bin/sleep 5
+ExecStart=@EXEC_START@
 WorkingDirectory=/home/admin
 User=admin
 Restart=always
