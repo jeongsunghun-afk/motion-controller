@@ -1,8 +1,8 @@
 #!/usr/bin/python3
 
 #
-#   Developer : Philippe Piatkiewitz (philippe.piatkiewitz@vectioneer.com)
-#   All rights reserved. Copyright (c) 2024 VECTIONEER.
+#   Developer : Coen Smeets (Coen@vectioneer.com)
+#   All rights reserved. Copyright (c) 2025 VECTIONEER.
 #
 
 from dataclasses import dataclass

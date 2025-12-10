@@ -1,5 +1,11 @@
 import logging
-from mcx_client_app import McxClientApp, MCXClientAppOptions, StopSignal
+from src.mcx_client_app import McxClientApp, MCXClientAppOptions, StopSignal
+
+#
+#   Developer : Coen Smeets (Coen@vectioneer.com)
+#   All rights reserved. Copyright (c) 2025 VECTIONEER.
+#
+
 
 if __name__ == '__main__':
     def example_action(app: McxClientApp) -> None:
@@ -30,16 +36,14 @@ if __name__ == '__main__':
         Args:
             app (McxClientApp): The app instance.
         """
-        app.req.setParameter("root/Operations/StartOperation", 1).get()
         logging.info("Start operation action.")
 
 
     new_options = MCXClientAppOptions(
         login ="",
         password="",
-        target_url="",
-        start_stop_param="root/UserParameters/GUI/PythonScript01/StartStop",
+        target_url=""
     )
 
-    app = McxClientApp(new_options, create=create)
+    app = McxClientApp(new_options, create_callback=create)
     app.run(action_callback=example_action, startOp_callback=startOp)
