@@ -29,7 +29,7 @@ or by adding a button in the GUI that toggles this parameter.
 
 
 import logging
-from mcx_client_app import McxClientApp, MCXClientAppOptions
+from src.mcx_client_app import McxClientApp, MCXClientAppOptions
 
 if __name__ == '__main__':
     def action(app: McxClientApp) -> None:

@@ -94,9 +94,9 @@ if __name__ == '__main__':
 
 
     new_options = MCXClientAppOptions(
-        login ="",
-        password="",
-        target_url="",
+        login ="admin",
+        password="vectioneer",
+        target_url="wss://192.168.2.100",
     )
 
     app = McxClientApp(new_options, create_callback=create)
