@@ -16,3 +16,25 @@ The project contains the following files:
 
 ## Usage tips
 The script is suitable to add functionality to a motorcortex realtime application to automate certain behavior of the realtime app. For instance to run automatic tests (in combination with the motorcortex-python-tools for instance), or to execute a motion profile of a robot or AGV. Another use can be to stream data from motorcortex to another system like a database (see for instance [motorcortex-python-influx](https://git.vectioneer.com/pub/motorcortex-python-influx)) or provide a bridge to other middlewares like MQTT, OPC-UA or ROS.
+
+### Overview
+
+```
+mcx-client-app-template/
+├── mcx-client-app.py                # Main Python client app template for Motorcortex integration
+├── makedeb.sh                       # Script to build a Debian package for MCX-RTOS deployment
+├── collect_python_dependencies.sh    # Script to collect non-pure Python dependencies for packaging
+├── template.service.in               # Template for the systemd service file
+├── README.md                         # Project documentation and usage instructions
+├── build/                            # Build artifacts and generated Debian package files
+├── examples/                         # Example scripts demonstrating usage
+│   ├── robot_app.py                  # Example: robot control application
+│   └── start_button.py               # Example: start button integration
+├── src/                              # Source code for the client app
+│   └── mcx_client_app/
+│       ├── __init__.py               # Package initializer
+│       ├── app.py                    # Main application logic
+│       └── mcx_client_app.egg-info/  # Metadata for the Python package
+```
+
+Each file and folder is briefly described above for clarity.

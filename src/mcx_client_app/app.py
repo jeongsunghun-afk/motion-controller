@@ -15,8 +15,10 @@ import logging
 logging.basicConfig(level=logging.INFO)
 import time
 import operator
-from typing import Callable, Optional
-    
+from typing import Callable, Optional, TypeVar, Generic
+import queue
+
+T = TypeVar('T')
 
 waitForOperators = {
     "==": operator.eq,
@@ -68,7 +70,7 @@ class StopSignal(Exception):
 
 
 @dataclass
-class MCXClientAppOptions:
+class McxClientAppOptions:
     """
     Configuration options for McxClientApp.
 
@@ -93,32 +95,71 @@ class MCXClientAppOptions:
     statecmd_param: str = "root/Logic/stateCommand"
     state_param: str = "root/Logic/state"
     start_stop_param: str|None = None
+    
+class ThreadSafeValue(Generic[T]):
+    """A thread-safe single-value container.
+    
+    Methods:
+        set(value): Set a new value in a thread-safe manner.
+        get(): Get the current value.
+    """
+    def __init__(self, initial_value: T) -> None:
+        """Initialize the ThreadSafeValue with an initial value.
+        
+        Args:
+            initial_value (T): The initial value to store.
+        """
+        self._q: queue.Queue[T] = queue.Queue(maxsize=1)
+        self._q.put(initial_value)
+
+    def set(self, value: T) -> None:
+        """Set a new value in a thread-safe manner.
+        
+        Args:
+            value (T): The new value to store.
+        """
+        try:
+            self._q.get_nowait()
+        except queue.Empty:
+            pass
+        self._q.put_nowait(value)
+
+    def get(self) -> T:
+        """Get the current value.
+        
+        Returns:
+            T: The current value stored in the container.
+        """
+        return self._q.queue[0]
 
 class McxClientApp:
     """
-    Client application for interacting with a Motorcortex server.
+    Base client application for interacting with a Motorcortex server.
     Provides methods to connect, engage, disengage, and run user-defined actions with state monitoring.
+    
+    This base class does NOT use a separate thread for the action() method.
+    
+    To use this class, inherit from it and override the following methods:
+        - action(): Main action loop (called repeatedly while running)
+        - startOp(): Called after connection is established (optional)
+        - onExit(): Called before disconnecting (optional)
     """
-    def __init__(self, options: TypingOptional[MCXClientAppOptions] = None, create_callback: Optional[Callable[["McxClientApp"], None]] = None) -> None:
+    def __init__(self, options: TypingOptional[McxClientAppOptions] = None) -> None:
         """
-        Initialize the McxClientApp.
+        Initialize the MCxClientApp.
 
         Args:
-            options (MCXClientAppOptions): Optional MCXClientAppOptions dataclass with configuration.
-            create_callback (Optional[Callable[[McxClientApp], None]]): Optional initialization function called after setup. Use this to add custom attributes.
+            options (McxClientAppOptions): Optional McxClientAppOptions dataclass with configuration.
         """
         if options is None:
-            options = MCXClientAppOptions(login="", password="")
+            options = McxClientAppOptions(login="", password="")
         self.options = options
         self.parameter_tree: motorcortex.ParameterTree = motorcortex.ParameterTree()
         self.motorcortex_types: motorcortex.MessageTypes = motorcortex.MessageTypes()
         self.req: TypingOptional[motorcortex.Request] = None
         self.sub: TypingOptional[motorcortex.Subscription] = None
         self.__id = str(uuid.uuid4())
-        self._running: bool = self.options.start_stop_param is None
-        
-        if create_callback is not None:
-            create_callback(self)
+        self.running: ThreadSafeValue = ThreadSafeValue(self.options.start_stop_param is None)
         
     def connect(self) -> None:
         """
@@ -173,7 +214,7 @@ class McxClientApp:
         op_func = waitForOperators[operat]
         logging.info(f"Waiting for {param} {operat} {value}")
         while not op_func(self.req.getParameter(param).get().value[index], value):
-            if not self._running and not block_stop_signal:
+            if not self.running.get() and not block_stop_signal:
                 logging.warning("STOP")
                 raise StopSignal("Received stop signal")
             time.sleep(testinterval)
@@ -204,7 +245,7 @@ class McxClientApp:
         """
         to = time.time() + timeout if timeout > 0 else float('inf')
         while True:
-            if not self._running and not block_stop_signal:
+            if not self.running.get() and not block_stop_signal:
                 logging.warning("STOP")
                 raise StopSignal("Received stop signal")
             time.sleep(testinterval)
@@ -214,9 +255,9 @@ class McxClientApp:
 
     def reset(self) -> None:
         """
-        Reset the running flag to True.
+        Reset the running flag to False.
         """
-        self._running = False
+        self.running.set(False)
 
     def engage(self) -> None:
         """
@@ -232,29 +273,45 @@ class McxClientApp:
         self.req.setParameter(self.options.statecmd_param, stateCommand["GOTO_OFF_E"]).get()
         self.wait_for(self.options.state_param, state["OFF_S"], block_stop_signal=True)
 
-    def run(
-        self,
-        action_callback: Callable[["McxClientApp"], None],
-        startOp_callback: Optional[Callable[["McxClientApp"], None]] = None,
-        exit_callback: Optional[Callable[["McxClientApp"], None]] = None
-    ) -> None:
+    def action(self) -> None:
+        """
+        Main action loop called repeatedly while the system is running.
+        Override this method in your subclass to implement custom behavior.
+        
+        In the base class, this method runs in the main thread.
+        Use wait() or wait_for() methods which will raise StopSignal when stopped.
+        """
+        raise NotImplementedError("The action() method must be overridden in the subclass.")
+    
+    def startOp(self) -> None:
+        """
+        Called after connection is established, before engaging the system.
+        Override this method to set parameters or perform initialization.
+        """
+        pass
+    
+    def onExit(self) -> None:
+        """
+        Called before disconnecting from the server.
+        Override this method to perform cleanup operations.
+        """
+        pass
+
+    def run(self) -> None:
         """
         Run the client application: connect, engage, run action, disengage, disconnect.
-
-        Args:
-            action_callback (Optional[Callable[[McxClientApp], None]]):
-                Function to call when the system is engaged. Receives the app instance.
-                Make sure it is interruptible by checking for stop signals.
-            startOp_callback (Optional[Callable[[McxClientApp], None]]):
-                Function to call after connection is established. Receives the app instance.
-                This can be used to set Parameters before starting the main action loop.
-            exit_callback (Optional[Callable[[McxClientApp], None]]):
-                Function to call before disconnecting. Receives the app instance.
+        
+        This method:
+        1. Connects to the Motorcortex server
+        2. Calls startOp() for initialization
+        3. Engages the system
+        4. Runs the action() method in the main thread
+        5. Monitors start/stop signals
+        6. Disengages and calls onExit() before disconnecting
         """
         self.connect()
         logging.info("Connected to Motorcortex server.")
-        if startOp_callback is not None:
-            startOp_callback(self)
+        self.startOp()
         if self.options.start_stop_param:
             self.req.setParameter(self.options.start_stop_param, 0).get()
             start_stop_subscription = self.sub.subscribe(self.options.start_stop_param, group_alias=self.__id, frq_divider=1000)
@@ -263,37 +320,67 @@ class McxClientApp:
             logging.info("Subscribed to StartStop parameter notifications.")
             start_stop_subscription.notify(self._start_stop_notify)
         
-        while True:
+        try:
+            self.engage()
+            
+            while True:
+                try:
+                    if self.options.start_stop_param:
+                        logging.info("Waiting for StartStop parameter to be True...")
+                        self.wait_for(self.options.start_stop_param, 0, operat="!=", block_stop_signal=True)
+                        self.running.set(True)
+                    logging.info("System engaged. Running user action...")
+                    
+                    # Run action method in the main thread
+                    while self.running.get():
+                        self.action()
+                    
+                    logging.info("Stop signal detected. Waiting for next start signal...")
+                    # Continue loop to wait for next start signal
+                    
+                except StopSignal:
+                    logging.info("Action received stop signal.")
+                    self.running.set(False)
+                except KeyboardInterrupt:
+                    # Re-raise to outer handler
+                    raise
+                except Exception as e:
+                    logging.error(f"An error occurred in action loop: {e}")
+                    self.running.set(False)
+                    # Continue loop to allow restart
+                    
+        except KeyboardInterrupt:
+            logging.info("Keyboard interrupt received. Shutting down...")
+            self.running.set(False)
+        except Exception as e:
+            logging.error(f"Critical error: {e}")
+            self.running.set(False)
+        finally:
+            # Clean up
+            self.running.set(False)
+            
             try:
-                self.engage()
-                if self.options.start_stop_param:
-                    logging.info("Waiting for StartStop parameter to be True...")
-                    self.wait_for(self.options.start_stop_param, 0, operat="!=", block_stop_signal=True)
-                    self._running = True
-                logging.info("System engaged. Running user action...")
-                print(f"running: {self._running}")
-                while self._running:
-                    action_callback(self)
-                    print(f"running: {self._running}")
-                else:
-                    print(f"running: {self._running}")
-                    raise StopSignal("Received stop signal")
-            except StopSignal:
-                logging.info("Stop signal received. Disengaging...")
-                self.reset()
                 self.disengage()
             except Exception as e:
-                logging.error(f"An error occurred: {e}")
-            finally:
-                if exit_callback is not None:
-                    exit_callback(self)
-                if self.req:
-                    self.req.close()
-                if self.sub:
-                    self.sub.close()
-                logging.info("Connection closed.")
-                break
+                logging.error(f"Error during disengage: {e}")
             
+            try:
+                self.onExit()
+            except Exception as e:
+                logging.error(f"Error during onExit: {e}")
+            
+            if self.req:
+                try:
+                    self.req.close()
+                except Exception as e:
+                    logging.error(f"Error closing request: {e}")
+            if self.sub:
+                try:
+                    self.sub.close()
+                except Exception as e:
+                    logging.error(f"Error closing subscription: {e}")
+            logging.info("Connection closed.")
+    
     def _start_stop_notify(self, msg) -> None:
         """
         Notification callback for StartStop parameter changes. 
@@ -303,9 +390,9 @@ class McxClientApp:
             msg: Message object containing the new value of the StartStop parameter.
         """
         value = msg[0].value[0]
-        if self._running != value != 0:
+        if self.running.get() != (value != 0):
             logging.info(f"StartStop parameter changed to {value}. Updating running state.")
-            self._running = value != 0
+            self.running.set(value != 0)
 
     def __get_cert_path(self) -> str:
         """
@@ -320,44 +407,185 @@ class McxClientApp:
             return default_path
         return self.options.cert
 
-if __name__ == '__main__':
-    def example_action(app: McxClientApp) -> None:
-        """
-        Example user action: sleep for 5 seconds.
-        
-        Args:
-            app (McxClientApp): The app instance.
-        """
-        logging.info("Sleeping for 5 seconds...")
-        app.wait(5)
-        logging.info("Action complete.")
-        
-    def create(app: McxClientApp) -> None:
-        """
-        Example initialization action.
-        
-        Args:
-            app (McxClientApp): The app instance.
-        """
-        app.newObject = True
-        logging.info("Initialization action.")
-        
-    def startOp(app: McxClientApp) -> None:
-        """
-        Example start operation action.
-        
-        Args:
-            app (McxClientApp): The app instance.
-        """
-        app.req.setParameter("root/Operations/StartOperation", 1).get()
-        logging.info("Start operation action.")
 
-    new_options = MCXClientAppOptions(
-        login ="",
+class McxClientAppThread(McxClientApp):
+    """
+    Threaded client application for interacting with a Motorcortex server.
+    
+    This class extends MCxClientApp and runs the action() method in a separate thread,
+    allowing the main thread to monitor start/stop signals independently.
+    
+    To use this class, inherit from it and override the following methods:
+        - action(): Main action loop (called repeatedly in a separate thread)
+        - startOp(): Called after connection is established (optional)
+        - onExit(): Called before disconnecting (optional)
+    """
+    def __init__(self, options: TypingOptional[McxClientAppOptions] = None) -> None:
+        """
+        Initialize the McxClientAppThread.
+
+        Args:
+            options (McxClientAppOptions): Optional McxClientAppOptions dataclass with configuration.
+        """
+        super().__init__(options)
+        self._action_thread: TypingOptional[threading.Thread] = None
+    
+    def run(self) -> None:
+        """
+        Run the client application with action() in a separate thread.
+        
+        This method:
+        1. Connects to the Motorcortex server
+        2. Calls startOp() for initialization
+        3. Engages the system
+        4. Runs the action() method in a separate thread
+        5. Main thread monitors start/stop signals
+        6. Disengages and calls onExit() before disconnecting
+        """
+        self.connect()
+        logging.info("Connected to Motorcortex server.")
+        self.startOp()
+        if self.options.start_stop_param:
+            self.req.setParameter(self.options.start_stop_param, 0).get()
+            start_stop_subscription = self.sub.subscribe(self.options.start_stop_param, group_alias=self._MCxClientApp__id, frq_divider=1000)
+            if (start_stop_subscription is not None and start_stop_subscription.get().status == motorcortex.OK):
+                logging.info("StartStop parameter subscription successful.")
+            logging.info("Subscribed to StartStop parameter notifications.")
+            start_stop_subscription.notify(self._start_stop_notify)
+        
+        try:
+            self.engage()
+            
+            while True:
+                try:
+                    if self.options.start_stop_param:
+                        logging.info("Waiting for StartStop parameter to be True...")
+                        self.wait_for(self.options.start_stop_param, 0, operat="!=", block_stop_signal=True)
+                        self.running.set(True)
+                    logging.info("System engaged. Running user action in separate thread...")
+                    print(f"running: {self.running.get()}")
+                    
+                    # Start action method in a separate thread
+                    self._action_thread = threading.Thread(target=self._action_wrapper, daemon=True)
+                    self._action_thread.start()
+                    
+                    # Main thread monitors the running state
+                    while self.running.get():
+                        time.sleep(0.1)  # Check running state periodically
+                    
+                    # Stop signal received, stop the action thread
+                    logging.info("Stop signal detected in main thread.")
+                    if self._action_thread and self._action_thread.is_alive():
+                        # Wait for action thread to stop (it should check running regularly)
+                        self._action_thread.join(timeout=5.0)
+                        if self._action_thread.is_alive():
+                            logging.warning("Action thread did not stop gracefully within timeout.")
+                    
+                    logging.info("Action thread stopped. Waiting for next start signal...")
+                    # Continue loop to wait for next start signal
+                    
+                except KeyboardInterrupt:
+                    # Re-raise to outer handler
+                    raise
+                except Exception as e:
+                    logging.error(f"An error occurred in action loop: {e}")
+                    self.running.set(False)
+                    if self._action_thread and self._action_thread.is_alive():
+                        self._action_thread.join(timeout=5.0)
+                    # Continue loop to allow restart
+                    
+        except KeyboardInterrupt:
+            logging.info("Keyboard interrupt received. Shutting down...")
+            self.running.set(False)
+        except Exception as e:
+            logging.error(f"Critical error: {e}")
+            self.running.set(False)
+        finally:
+            # Clean up: stop action thread if still running
+            self.running.set(False)
+            if self._action_thread and self._action_thread.is_alive():
+                logging.info("Stopping action thread...")
+                self._action_thread.join(timeout=5.0)
+                if self._action_thread.is_alive():
+                    logging.warning("Action thread did not stop within timeout. Thread may remain running.")
+            
+            try:
+                self.disengage()
+            except Exception as e:
+                logging.error(f"Error during disengage: {e}")
+            
+            try:
+                self.onExit()
+            except Exception as e:
+                logging.error(f"Error during onExit: {e}")
+            
+            if self.req:
+                try:
+                    self.req.close()
+                except Exception as e:
+                    logging.error(f"Error closing request: {e}")
+            if self.sub:
+                try:
+                    self.sub.close()
+                except Exception as e:
+                    logging.error(f"Error closing subscription: {e}")
+            logging.info("Connection closed.")
+    
+    def _action_wrapper(self) -> None:
+        """
+        Wrapper for running action() method in a loop until stopped.
+        Runs in a separate thread.
+        """
+        try:
+            while self.running.get():
+                self.action()
+        except StopSignal:
+            logging.info("Action thread received stop signal.")
+        except Exception as e:
+            logging.error(f"Error in action thread: {e}")
+            self.running.set(False)
+
+
+if __name__ == '__main__':
+    class ExampleApp(McxClientAppThread):
+        """
+        Example application demonstrating threaded inheritance pattern.
+        """
+        def __init__(self, options: McxClientAppOptions):
+            super().__init__(options)
+            # Add custom attributes here
+            self.custom_counter = 0
+            logging.info("ExampleApp initialized.")
+        
+        def action(self) -> None:
+            """
+            Main action: sleep for 5 seconds.
+            This runs in a separate thread when using McxClientAppThread.
+            """
+            self.custom_counter += 1
+            logging.info(f"Action {self.custom_counter}: Sleeping for 5 seconds...")
+            self.wait(5)
+            logging.info("Action complete.")
+        
+        def startOp(self) -> None:
+            """
+            Initialization after connection.
+            """
+            # Example: set a parameter
+            # self.req.setParameter("root/Operations/StartOperation", 1).get()
+            logging.info("Start operation complete.")
+        
+        def onExit(self) -> None:
+            """
+            Cleanup before exit.
+            """
+            logging.info(f"Exiting after {self.custom_counter} actions.")
+
+    options = McxClientAppOptions(
+        login="",
         password="",
         target_url="",
-        start_stop_param="root/UserParameters/GUI/PythonScript01/StartStop",
     )
 
-    app = McxClientApp(create=create)
-    app.run(action_callback=example_action, startOp_callback=startOp)
+    app = ExampleApp(options)
+    app.run()

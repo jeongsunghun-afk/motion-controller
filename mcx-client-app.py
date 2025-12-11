@@ -1,5 +1,5 @@
 import logging
-from src.mcx_client_app import McxClientApp, MCXClientAppOptions, StopSignal
+from src.mcx_client_app import McxClientApp, McxClientAppOptions, StopSignal
 
 #
 #   Developer : Coen Smeets (Coen@vectioneer.com)
@@ -7,43 +7,50 @@ from src.mcx_client_app import McxClientApp, MCXClientAppOptions, StopSignal
 #
 
 
-if __name__ == '__main__':
-    def example_action(app: McxClientApp) -> None:
+class MyRobotApp(McxClientApp):
+    """
+    Custom robot application.
+    Inherit from McxClientApp and override methods to implement custom behavior.
+    """
+    def __init__(self, options: McxClientAppOptions):
+        super().__init__(options)
+        # Add your custom attributes here
+        self.action_count = 0
+        logging.info("MyRobotApp initialized.")
+    
+    def action(self) -> None:
         """
-        Example user action: sleep for 5 seconds.
-        
-        Args:
-            app (McxClientApp): The app instance.
+        Main action loop - executed repeatedly while running.
+        This runs in a separate thread.
         """
-        logging.info("Sleeping for 5 seconds...")
-        app.wait(5)
+        self.action_count += 1
+        logging.info(f"Action #{self.action_count}: Sleeping for 5 seconds...")
+        self.wait(5)
         logging.info("Action complete.")
-        
-    def create(app: McxClientApp) -> None:
+    
+    def startOp(self) -> None:
         """
-        Example initialization action.
-        
-        Args:
-            app (McxClientApp): The app instance.
+        Called after connection is established.
+        Use this to set parameters or perform initialization.
         """
-        app.newObject = True
-        logging.info("Initialization action.")
-        
-    def startOp(app: McxClientApp) -> None:
+        logging.info("Start operation - setting up parameters...")
+        # Example: self.req.setParameter("root/SomeParameter", value).get()
+    
+    def onExit(self) -> None:
         """
-        Example start operation action.
-        
-        Args:
-            app (McxClientApp): The app instance.
+        Called before disconnecting.
+        Use this for cleanup operations.
         """
-        logging.info("Start operation action.")
+        logging.info(f"Exiting after {self.action_count} actions performed.")
 
 
-    new_options = MCXClientAppOptions(
-        login ="",
+if __name__ == '__main__':
+    options = McxClientAppOptions(
+        login="",
         password="",
-        target_url=""
+        target_url="",
+        # start_stop_param="root/UserParameters/GUI/PythonScript01/StartStop"
     )
 
-    app = McxClientApp(new_options, create_callback=create)
-    app.run(action_callback=example_action, startOp_callback=startOp)
+    app = MyRobotApp(options)
+    app.run()

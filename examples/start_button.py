@@ -29,37 +29,43 @@ or by adding a button in the GUI that toggles this parameter.
 
 
 import logging
-from src.mcx_client_app import McxClientApp, MCXClientAppOptions
+import sys
+from pathlib import Path
 
-if __name__ == '__main__':
-    def action(app: McxClientApp) -> None:
+# Add parent directory to path to import mcx_client_app
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from src.mcx_client_app import McxClientApp, McxClientAppOptions
+
+
+class StartButtonApp(McxClientApp):
+    """
+    Example application demonstrating start/stop button control.
+    """
+    def action(self) -> None:
         """
-        Example user action: wait for 5 seconds.
-        
-        Args:
-            app (McxClientApp): The app instance.
+        Main action: wait for 5 seconds.
         """
         logging.info("Action started - waiting 5 seconds...")
-        app.wait(5)
+        self.wait(20)
         logging.info("Action complete.")
-        
-    def exit(app: McxClientApp) -> None:
+    
+    def onExit(self) -> None:
         """
-        Example exit action.
-        
-        Args:
-            app (McxClientApp): The app instance.
+        Cleanup before exit.
         """
-        app.wait(1)
+        self.wait(1)
         logging.info("Exit callback - cleaning up before disconnect.")
 
-    new_options = MCXClientAppOptions(
+
+if __name__ == '__main__':
+    new_options = McxClientAppOptions(
         login="",
         password="",
         target_url="",
         start_stop_param="root/UserParameters/GUI/PythonScript01/StartStop"
     )
 
-    app = McxClientApp(new_options)
-    app.run(action_callback=action, exit_callback=exit)
+    app = StartButtonApp(new_options)
+    app.run()
 
