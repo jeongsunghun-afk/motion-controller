@@ -17,6 +17,7 @@ import time
 import operator
 from typing import Callable, Optional, TypeVar, Generic
 import queue
+import copy
 
 T = TypeVar('T')
 
@@ -96,41 +97,34 @@ class McxClientAppOptions:
     state_param: str = "root/Logic/state"
     start_stop_param: str|None = None
     
+
 class ThreadSafeValue(Generic[T]):
-    """A thread-safe single-value container.
-    
-    Methods:
-        set(value): Set a new value in a thread-safe manner.
-        get(): Get the current value.
     """
-    def __init__(self, initial_value: T) -> None:
-        """Initialize the ThreadSafeValue with an initial value.
+    Thread-safe single-value container with optional blocking read.
+    """
+    def __init__(self, initial_value: Optional[T] = None) -> None:
+        self._lock = threading.Lock()
+        self.__value = initial_value
         
-        Args:
-            initial_value (T): The initial value to store.
+    def get(self) -> Optional[T]:
         """
-        self._q: queue.Queue[T] = queue.Queue(maxsize=1)
-        self._q.put(initial_value)
+        Get the current value in a thread-safe manner.
 
-    def set(self, value: T) -> None:
-        """Set a new value in a thread-safe manner.
-        
-        Args:
-            value (T): The new value to store.
-        """
-        try:
-            self._q.get_nowait()
-        except queue.Empty:
-            pass
-        self._q.put_nowait(value)
-
-    def get(self) -> T:
-        """Get the current value.
-        
         Returns:
-            T: The current value stored in the container.
+            The current value.
         """
-        return self._q.queue[0]
+        with self._lock:
+            return copy.deepcopy(self.__value)
+        
+    def set(self, value: T) -> None:
+        """
+        Set a new value in a thread-safe manner.
+
+        Args:
+            value: The new value to set.
+        """
+        with self._lock:
+            self.__value = copy.deepcopy(value)
 
 class McxClientApp:
     """

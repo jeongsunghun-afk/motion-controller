@@ -320,9 +320,9 @@ class MyApp(MCxClientApp):
         self.wait(1)  # Wait 1 second between cycles
 
 options = McxClientAppOptions(
-    login="admin",
-    password="vectioneer",
-    target_url="wss://192.168.2.100",
+    login="",
+    password="",
+    target_url="",
     cert="mcx.cert.crt"
 )
 
@@ -361,9 +361,9 @@ class FullCustomApp(MCxClientApp):
         self.req.setParameter("root/Operations/StartOperation", 0).get()
 
 options = McxClientAppOptions(
-    login="admin",
-    password="vectioneer",
-    target_url="wss://192.168.2.100",
+    login="",
+    password="",
+    target_url="",
     cert="mcx.cert.crt",
     start_stop_param="root/UserParameters/GUI/PythonScript01/StartStop"
 )
@@ -385,11 +385,11 @@ class MonitorApp(McxClientAppThread):
         self.wait(0.5)  # Check every 500ms
 
 options = McxClientAppOptions(
-    login="admin",
-    password="vectioneer",
-    target_url="wss://192.168.2.100",
+    login="",
+    password="",
+    target_url="",
     cert="mcx.cert.crt",
-    start_stop_param="root/UserParameters/GUI/PythonScript01/StartStop"
+    start_stop_param=""
 )
 
 app = MonitorApp(options)
@@ -428,9 +428,9 @@ class PositionWaitApp(MCxClientApp):
         self.wait(1)
 
 options = McxClientAppOptions(
-    login="admin",
-    password="vectioneer",
-    target_url="wss://192.168.2.100"
+    login="",
+    password="",
+    target_url=""
 )
 
 app = PositionWaitApp(options)
@@ -464,9 +464,9 @@ class ToolPoseMonitor(McxClientAppThread):
         self.wait(1)
 
 options = McxClientAppOptions(
-    login="admin",
-    password="vectioneer",
-    target_url="wss://192.168.2.100",
+    login="",
+    password="",
+    target_url="",
     start_stop_param="root/UserParameters/GUI/PythonScript01/StartStop"
 )
 
@@ -569,7 +569,7 @@ class TemperatureMonitor(MCxClientApp):
 5. **Use `block_stop_signal=True` sparingly** - only when you need uninterruptible operations
 6. **Test stop signal behavior** before deploying to production
 7. **Log important state changes** for debugging and monitoring
-8. **Use `ThreadSafeValue[T]` for cross-thread communication** when using `McxClientAppThread`
+8. **Use `ThreadSafeValue[T]` for cross-thread communication** when using `McxClientAppThread` or subscriptions
 9. **Always call `super().__init__(options)`** when overriding `__init__()`
 10. **Press Ctrl+C to safely exit** - the app will disengage and clean up properly
 
