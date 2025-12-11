@@ -9,7 +9,7 @@
 
 
 Deps="motorcortex-python motorcortex-python-tools"
-DepsLatest="plotly pandas numpy scipy pandas typing_extensions"
+DepsLatest="plotly pandas numpy scipy pandas typing_extensions motorcortex-robot-control-python"
 
 TgtDir=$(pwd)
 TmpDir=$(mktemp -d)

@@ -57,6 +57,7 @@ class CustomButtonApp(McxClientApp):
             frq_divider=10 
         )
         self.buttonSubscription.notify(self.__button_callback)
+        self.req.setParameter('root/UserParameters/GUI/PythonScript01/Counter', 0).get()
     
     def __button_callback(self, msg) -> None:
         """Callback for button press - only trigger on rising edge (0 -> 1). (Happens in the subscription thread)"""

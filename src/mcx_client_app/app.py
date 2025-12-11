@@ -256,16 +256,24 @@ class McxClientApp:
     def engage(self) -> None:
         """
         Command the system to the ENGAGED state and wait until it is engaged.
+        Sends the command every 5 seconds until engaged or stopped.
         """
-        self.req.setParameter(self.options.statecmd_param, stateCommand["GOTO_ENGAGED_E"]).get()
-        self.wait_for(self.options.state_param, state["ENGAGED_S"], block_stop_signal=True)
+        while self.running.get():
+            self.req.setParameter(self.options.statecmd_param, stateCommand["GOTO_ENGAGED_E"]).get()
+            if self.wait_for(self.options.state_param, state["ENGAGED_S"], timeout=5, block_stop_signal=True):
+                break
+            logging.info("ENGAGED state not reached, resending command...")
 
     def disengage(self) -> None:
         """
         Command the system to the OFF state and wait until it is off.
+        Sends the command every 5 seconds until off or stopped.
         """
-        self.req.setParameter(self.options.statecmd_param, stateCommand["GOTO_OFF_E"]).get()
-        self.wait_for(self.options.state_param, state["OFF_S"], block_stop_signal=True)
+        while self.running.get():
+            self.req.setParameter(self.options.statecmd_param, stateCommand["GOTO_OFF_E"]).get()
+            if self.wait_for(self.options.state_param, state["OFF_S"], timeout=5, block_stop_signal=True):
+                break
+            logging.info("OFF state not reached, resending command...")
 
     def action(self) -> None:
         """
