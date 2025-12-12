@@ -8,8 +8,8 @@ from src.mcx_client_app import McxClientApp, McxClientAppOptions, ThreadSafeValu
 from motorcortex import Subscription
 import os
 import csv
-from datetime import datetime
-from queue import Queue
+from datetime import datetime # For timestamping files
+from queue import Queue # Thread-safe queue
 import time
 import logging
 
@@ -34,15 +34,15 @@ class dataLoggerClientApp(McxClientApp):
             batch_size (int, optional): Maximum items to process per iteration. Defaults to 100.
         """
         super().__init__(options)
-        self.__subscription: Subscription = None
-        self.__paths = paths
-        self.__file_path = file_path
-        self.__divider = divider
-        self.__save_interval = save_interval
-        self.__batch_size = batch_size
+        self.__subscription: Subscription = None # Placeholder for subscription
+        self.__paths = paths # List of parameter paths to log
+        self.__file_path = file_path # Path to the file where data will be logged
+        self.__divider = divider # Frequency divider for logging
+        self.__save_interval = save_interval # Optional: Interval for saving data to file in seconds
+        self.__batch_size = batch_size # Maximum items to process per iteration
         self.__data_queue: Queue = Queue()  # Unbounded thread-safe queue
         self.__buffer: list[dict] = []  # Buffer to accumulate data before writing
-        self.__last_save_time: float = time.time()
+        self.__last_save_time: float = time.time() # Last time data was saved
         self.__field_mapping: dict = {}  # Maps path to expanded field names
         self.__fieldnames: list[str] = []  # All CSV column names
         
@@ -61,14 +61,11 @@ class dataLoggerClientApp(McxClientApp):
         logging.info("Data logger initialized and subscribed.")
         
     def __get_unique_filepath(self) -> str:
-        """Get a unique filepath by appending date and time if file exists.
+        """Get a unique filepath by appending date and time.
         
         Returns:
             str: Unique filepath (e.g., robot_data_2024-12-12_14-30-45.csv)
         """
-        if not os.path.exists(self.__file_path):
-            return self.__file_path
-        
         # Split path into directory, name, and extension
         directory = os.path.dirname(self.__file_path)
         basename = os.path.basename(self.__file_path)
