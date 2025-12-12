@@ -119,3 +119,5 @@ Test.py
 venv-req
 dependencies.*.tar.gz
 dependencies.*/
+stubs/
+data/
