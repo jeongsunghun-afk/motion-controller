@@ -3,6 +3,7 @@
 
 ## Description
 This python project is an example for creating a motorcortex client application in python and distributing it as a Debian package, that can be deployed via the motorcortex portal (https://motorcortex.io/).
+Explanation of how to use the template is provided on the documentation site: [Documentation](https://docs.motorcortex.io/docs/developing-client-applications/python/usage/tools/)
 
 ## Structure of the project
 The project contains the following files:
