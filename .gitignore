@@ -121,3 +121,4 @@ dependencies.*.tar.gz
 dependencies.*/
 stubs/
 data/
+config.json

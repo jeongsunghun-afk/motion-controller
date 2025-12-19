@@ -13,6 +13,10 @@ from queue import Queue # Thread-safe queue
 import time
 import logging
 
+#
+#   Developer : Coen Smeets (Coen@vectioneer.com)
+#   All rights reserved. Copyright (c) 2025 VECTIONEER.
+#
 
 def timespec_to_msec(timestamp):
     return timestamp.sec * 1000 + timestamp.nsec / 1000000

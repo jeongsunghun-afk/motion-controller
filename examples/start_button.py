@@ -26,6 +26,10 @@ Add this to the end of the parameters.json file in the config/user folder of the
 You can start and stop the script by toggling this parameter in the DESK-Tool 
 or by adding a button in the GUI that toggles this parameter.
 """
+#
+#   Developer : Coen Smeets (Coen@vectioneer.com)
+#   All rights reserved. Copyright (c) 2025 VECTIONEER.
+#
 
 
 import logging
@@ -47,7 +51,7 @@ class StartButtonApp(McxClientApp):
         Main action: wait for 5 seconds.
         """
         logging.info("Action started - waiting 5 seconds...")
-        self.wait(20)
+        self.wait(5)
         logging.info("Action complete.")
     
     def onExit(self) -> None:
@@ -60,9 +64,9 @@ class StartButtonApp(McxClientApp):
 
 if __name__ == '__main__':
     new_options = McxClientAppOptions(
-        login="",
-        password="",
-        target_url="",
+        login="admin",
+        password="vectioneer",
+        target_url="wss://192.168.2.100",
         start_stop_param="root/UserParameters/GUI/PythonScript01/StartStop"
     )
 

@@ -1,11 +1,12 @@
 [Unit]
 Description=Client application for Motorcortex
-After=ethercat.target
+After=ethercat.target motorcortex.service
+PartOf=motorcortex.service
 StartLimitIntervalSec=0
 
 [Service]
 Type=simple
-ExecStartPre=/bin/sleep 5
+ExecStartPre=/bin/sleep 3
 ExecStart=@EXEC_START@
 WorkingDirectory=/home/admin
 User=admin

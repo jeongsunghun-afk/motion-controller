@@ -28,6 +28,10 @@ Add this to the end of the parameters.json file in the config/user folder of the
       ]
     }
 """
+#
+#   Developer : Coen Smeets (Coen@vectioneer.com)
+#   All rights reserved. Copyright (c) 2025 VECTIONEER.
+#
 
 import sys
 from pathlib import Path

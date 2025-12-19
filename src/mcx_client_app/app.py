@@ -19,6 +19,8 @@ import operator
 from typing import Callable, Optional, TypeVar, Generic
 import queue
 import copy
+import os
+import json
 
 T = TypeVar('T')
 
@@ -76,7 +78,6 @@ class StopSignal(Exception):
     pass
 
 
-@dataclass
 class McxClientAppOptions:
     """
     Configuration options for McxClientApp.
@@ -86,8 +87,10 @@ class McxClientAppOptions:
         password (str): Password for authenticating with the Motorcortex server.
         target_url (str): WebSocket URL of the Motorcortex server (e.g., 'wss://localhost').
             This is the endpoint used to establish the connection.
-        cert (str): Path to the SSL certificate file for secure connection (e.g., 'mcx.cert.crt').
-            Required for encrypted communication with the server. This is the fallback if "/etc/ssl/certs/mcx.cert.pem" is not found.
+        cert (str): Local Development path to the SSL certificate file for secure connection (e.g., 'mcx.cert.crt').
+            Required for encrypted communication with the server. This is only used with local development (Not deployed)
+        cert_deployed (str): Deployed path to the SSL certificate file for secure connection (default: '/etc/ssl/certs/mcx.cert.pem').
+            Required for encrypted communication with the server. This is only used when deployed on a system with the certificate installed.
         statecmd_param (str): Parameter path for sending state commands to the server (default: 'root/Logic/stateCommand').
             Used to control the robot or system state.
         state_param (str): Parameter path for reading the current state from the server (default: 'root/Logic/state').
@@ -96,19 +99,104 @@ class McxClientAppOptions:
             When enabled, the application will send the command to engage the system upon startup.
         run_during_states (list[State]|None): List of allowed states during which the action() method can run (default: [State.ENGAGED_S]).
             If the system is not in one of these states, the action() method will not execute.
+            If empty or None, the action() method can run in any state.
         start_stop_param (str|None): Optional parameter path for start/stop control (default: None).
             If provided, the application will monitor this parameter to start or stop operations.
     """
-    login: str
-    password: str
-    target_url: str = "wss://localhost"
-    cert: str = "mcx.cert.crt"
-    statecmd_param: str = "root/Logic/stateCommand"
-    state_param: str = "root/Logic/state"
-    auto_engage: bool = False
-    run_during_states: list[State]|None = field(default_factory=lambda: [State.ENGAGED_S])
-    start_stop_param: str|None = None
+    def __init__(
+        self,
+        login: str | None = None,
+        password: str | None = None,
+        target_url: str = "wss://localhost",
+        cert: str = "mcx.cert.crt",
+        cert_deployed: str = "/etc/ssl/certs/mcx.cert.pem",
+        statecmd_param: str = "root/Logic/stateCommand",
+        state_param: str = "root/Logic/state",
+        auto_engage: bool = False,
+        run_during_states: list[State] | None = [State.ENGAGED_S],
+        start_stop_param: str | None = None
+    ) -> None:
+        self.login = login
+        self.password = password
+        self.target_url = target_url
+        self.cert = cert
+        self.cert_deployed = cert_deployed
+        self.statecmd_param = statecmd_param
+        self.state_param = state_param
+        self.run_during_states = run_during_states
+        self.start_stop_param = start_stop_param
+
+        config_path = os.environ.get("CONFIG_PATH", None)
+        self.__deployed = config_path is not None
+        logging.info(f"McxClientApp Options loaded! [Deployed: {self.__deployed}]")
+        if self.__deployed and config_path:
+            with open(config_path, 'r') as f:
+                data = json.load(f)
+                self._load_json_dict(data)
+                
+        logging.info(f"McxClientAppOptions initialized: {self.__dict__()}")
+                
+    def __str__(self) -> str:
+        return (
+            f"McxClientAppOptions(login={self.login}, password={'***' if self.password else None}, "
+            f"target_url={self.target_url}, cert={self.cert}, cert_deployed={self.cert_deployed}, "
+            f"statecmd_param={self.statecmd_param}, state_param={self.state_param}, "
+            f"run_during_states={self.run_during_states}, "
+            f"start_stop_param={self.start_stop_param})"
+        )
+        
+    def __dict__(self) -> dict:
+        return {
+            "login": self.login,
+            "password": self.password,
+            "target_url": self.target_url,
+            "cert": self.cert,
+            "cert_deployed": self.cert_deployed,
+            "statecmd_param": self.statecmd_param,
+            "state_param": self.state_param,
+            "run_during_states": [state.name for state in self.run_during_states] if self.run_during_states is not None else None,
+            "start_stop_param": self.start_stop_param
+        }
+
+    @classmethod
+    def from_json(cls, json_file: str) -> 'McxClientAppOptions':
+        config_path = os.environ.get("CONFIG_PATH", None)
+        if config_path is not None:
+            return cls() # Load from environment config if deployed So bypass json_file
+        
+        with open(json_file, 'r') as f:
+            data = json.load(f)
+        return cls._from_dict(data)
+
+    @classmethod
+    def _from_dict(cls, data: dict) -> 'McxClientAppOptions':
+        obj = cls()
+        obj._load_json_dict(data)
+        return obj
+
+    def _load_json_dict(self, data: dict) -> None:
+        """
+        Load configuration options from a dict and update the instance attributes.
+        Only updates known attributes and handles enum conversion.
+        """
+        for key in data:
+            if hasattr(self, key):
+                value = data[key]
+                if key == "run_during_states" and value is not None: # Convert list of strings to list of State enums
+                    value = [State[state_str] for state_str in value]
+                setattr(self, key, value)
+
+    @property
+    def certificate(self) -> str:
+        if self.__deployed:
+            return self.cert_deployed
+        return self.cert
     
+    @property
+    def allowed_states(self) -> list[int]:
+        if self.run_during_states is None or len(self.run_during_states) == 0:
+            return [state.value for state in State]
+        return [state.value for state in self.run_during_states]
 
 class ThreadSafeValue(Generic[T]):
     """
@@ -178,7 +266,7 @@ class McxClientApp:
                 self.options.target_url,
                 self.motorcortex_types,
                 self.parameter_tree,
-                certificate=self.__get_cert_path(),
+                certificate=self.options.certificate,
                 timeout_ms=10000,
                 login=self.options.login,
                 password=self.options.password,
@@ -265,28 +353,6 @@ class McxClientApp:
         """
         self.running.set(False)
 
-    def engage(self) -> None:
-        """
-        Command the system to the ENGAGED state and wait until it is engaged.
-        Sends the command every 5 seconds until engaged or stopped.
-        """
-        while self.running.get():
-            self.req.setParameter(self.options.statecmd_param, StateCommand.GOTO_ENGAGED_E.value).get()
-            if self.wait_for(self.options.state_param, State.ENGAGED_S.value, timeout=5, block_stop_signal=True):
-                break
-            logging.info("ENGAGED state not reached, resending command...")
-
-    def disengage(self) -> None:
-        """
-        Command the system to the OFF state and wait until it is off.
-        Sends the command every 5 seconds until off or stopped.
-        """
-        while self.running.get():
-            self.req.setParameter(self.options.statecmd_param, StateCommand.GOTO_OFF_E.value).get()
-            if self.wait_for(self.options.state_param, State.OFF_S.value, timeout=5, block_stop_signal=True):
-                break
-            logging.info("OFF state not reached, resending command...")
-
     def action(self) -> None:
         """
         Main action loop called repeatedly while the system is running.
@@ -335,19 +401,16 @@ class McxClientApp:
             start_stop_subscription.notify(self._start_stop_notify)
         
         try:
-            if self.options.auto_engage:
-                self.engage()
-            
             while True:
                 try:
                     if self.options.start_stop_param:
                         logging.info("Waiting for StartStop parameter to be True...")
-                        self.wait_for(self.options.start_stop_param, 0, operat="!=", block_stop_signal=True)
+                        self.wait_for(self.options.start_stop_param, 0, operat="!=", block_stop_signal=True, timeout=-1)
                         self.running.set(True)
                         
                     if self.options.run_during_states:
                         logging.info("Waiting for system to be in allowed states...")
-                        self.wait_for(self.options.state_param, [s.value for s in self.options.run_during_states], operat="in", block_stop_signal=True)
+                        self.wait_for(self.options.state_param, [s.value for s in self.options.run_during_states], operat="in", block_stop_signal=True, timeout=-1)
                         self.running.set(True)
                     logging.info("Running user action...")
                     
@@ -417,19 +480,6 @@ class McxClientApp:
             logging.info(f"StartStop parameter changed to {value}. Updating running state.")
             self.running.set(value != 0)
 
-    def __get_cert_path(self) -> str:
-        """
-        Get the certificate path, checking default locations.
-
-        Returns:
-            str: Path to the certificate file.
-        """
-        import os
-        default_path = "/etc/ssl/certs/mcx.cert.pem"
-        if os.path.isfile(default_path):
-            return default_path
-        return self.options.cert
-
 
 class McxClientAppThread(McxClientApp):
     """
@@ -477,9 +527,6 @@ class McxClientAppThread(McxClientApp):
             start_stop_subscription.notify(self._start_stop_notify)
         
         try:
-            if self.options.auto_engage:
-                self.engage()
-            
             while True:
                 try:
                     if self.options.start_stop_param:
@@ -492,7 +539,7 @@ class McxClientAppThread(McxClientApp):
                         self.wait_for(self.options.state_param, [s.value for s in self.options.run_during_states], operat="in", block_stop_signal=True, timeout=-1)
                         self.running.set(True)
                     
-                    logging.info("System engaged. Running user action in separate thread...")
+                    logging.info("Running user action in separate thread...")
                     print(f"running: {self.running.get()}")
                     
                     # Start action method in a separate thread
@@ -613,11 +660,7 @@ if __name__ == '__main__':
             """
             logging.info(f"Exiting after {self.custom_counter} actions.")
 
-    options = McxClientAppOptions(
-        login="",
-        password="",
-        target_url="",
-    )
+    options = McxClientAppOptions.from_json('config.json')
 
     app = ExampleApp(options)
     app.run()

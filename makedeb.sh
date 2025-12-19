@@ -7,7 +7,7 @@ ARCHITECTURE="all"
 MAINTAINER="Vectioneer B.V. <info@vectioneer.com>"
 DESCRIPTION="A client application for getting and setting data in a Motorcortex Control Application"
 PYTHON_SCRIPT="mcx-client-app.py"
-PYTHON_MODULES="src1 src2" # directories, space separated list
+PYTHON_MODULES="src" # directories, space separated list
 SERVICE="${PACKAGE_NAME}"
 BUILDFOLDER="build"
 
@@ -80,7 +80,7 @@ done
 
 # Copy the service file and replace start command
 cp template.service.in ${BUILDFOLDER}/${PACKAGE_NAME}_${VERSION}/etc/systemd/system/${SERVICE}.service
-sed -i "s|@EXEC_START@|/bin/bash -c 'source ${VENV_TARGET_DIR}/bin/activate \&\& python3 ${VENV_TARGET_DIR}/${PYTHON_SCRIPT}; deactivate'|g" ${BUILDFOLDER}/${PACKAGE_NAME}_${VERSION}/etc/systemd/system/${SERVICE}.service
+sed -i "s|@EXEC_START@|/bin/bash -c 'source ${VENV_TARGET_DIR}/bin/activate \&\& CONFIG_PATH="/etc/motorcortex/config/services/${PACKAGE_NAME}.json" python3 ${VENV_TARGET_DIR}/${PYTHON_SCRIPT}; deactivate'|g" ${BUILDFOLDER}/${PACKAGE_NAME}_${VERSION}/etc/systemd/system/${SERVICE}.service
 
 # Set executable permissions
 chmod -f +x ${BUILDFOLDER}/${PACKAGE_NAME}_${VERSION}/DEBIAN/{preinst,postinst,prerm,postrm}
