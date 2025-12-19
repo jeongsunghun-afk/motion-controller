@@ -5,10 +5,11 @@
 #   All rights reserved. Copyright (c) 2025 VECTIONEER.
 #
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional as TypingOptional
 import threading
 import uuid
+from enum import Enum
 
 import motorcortex
 import logging
@@ -21,6 +22,7 @@ import copy
 
 T = TypeVar('T')
 
+
 waitForOperators = {
     "==": operator.eq,
     "!=": operator.ne,
@@ -28,40 +30,44 @@ waitForOperators = {
     "<=": operator.le,
     ">": operator.gt,
     ">=": operator.ge,
+    "in": lambda a, b: a in b,
 }
 
-stateCommand = {
-    "DO_NOTHING_E": -1,
-    "GOTO_OFF_E": 0,
-    "GOTO_IDLE_E": 1,
-    "GOTO_ENGAGED_E": 2,
-    "GOTO_REFERENCING_E": 4,
-    "FORCE_IDLE_E": 10,
-    "EMERGENCY_STOP_E": 20,
-    "SAVE_CONFIGURATION": 254,
-    "ACKNOWLEDGE_ERROR": 255
-}
 
-state = {
-    "INIT_S": 0,
-    "OFF_S": 1,
-    "IDLE_S": 2,
-    "PAUSED_S": 3,
-    "ENGAGED_S": 4,
-    "HOMING_S": 5,
-    "FORCEDIDLE_S": 6,
-    "ESTOP_OFF_S": 7,
-    "OFF_TO_IDLE_T": 102,
-    "OFF_TO_REFERENCING_T": 105,
-    "IDLE_TO_OFF_T": 201,
-    "PAUSED_TO_IDLE_T": 302,
-    "IDLE_TO_ENGAGED_T": 204,
-    "ENGAGED_TO_PAUSED_T": 403,
-    "TO_FORCEDIDLE_T": 600,
-    "RESET_FORCEDIDLE_T": 602,
-    "TO_ESTOP_T": 700,
-    "RESET_ESTOP_T": 701
-}
+class StateCommand(Enum):
+    """Enum for state commands sent to the Motorcortex server."""
+    DO_NOTHING_E = -1
+    GOTO_OFF_E = 0
+    GOTO_IDLE_E = 1
+    GOTO_ENGAGED_E = 2
+    GOTO_REFERENCING_E = 4
+    FORCE_IDLE_E = 10
+    EMERGENCY_STOP_E = 20
+    SAVE_CONFIGURATION = 254
+    ACKNOWLEDGE_ERROR = 255
+
+
+class State(Enum):
+    """Enum for system states of the Motorcortex server."""
+    INIT_S = 0
+    OFF_S = 1
+    IDLE_S = 2
+    PAUSED_S = 3
+    ENGAGED_S = 4
+    HOMING_S = 5
+    FORCEDIDLE_S = 6
+    ESTOP_OFF_S = 7
+    OFF_TO_IDLE_T = 102
+    OFF_TO_REFERENCING_T = 105
+    IDLE_TO_OFF_T = 201
+    PAUSED_TO_IDLE_T = 302
+    IDLE_TO_ENGAGED_T = 204
+    ENGAGED_TO_PAUSED_T = 403
+    TO_FORCEDIDLE_T = 600
+    RESET_FORCEDIDLE_T = 602
+    TO_ESTOP_T = 700
+    RESET_ESTOP_T = 701
+
 
 class StopSignal(Exception):
     """
@@ -86,6 +92,10 @@ class McxClientAppOptions:
             Used to control the robot or system state.
         state_param (str): Parameter path for reading the current state from the server (default: 'root/Logic/state').
             Used to monitor the robot or system state.
+        auto_engage (bool): If True, automatically engage the system after connection (default: False).
+            When enabled, the application will send the command to engage the system upon startup.
+        run_during_states (list[State]|None): List of allowed states during which the action() method can run (default: [State.ENGAGED_S]).
+            If the system is not in one of these states, the action() method will not execute.
         start_stop_param (str|None): Optional parameter path for start/stop control (default: None).
             If provided, the application will monitor this parameter to start or stop operations.
     """
@@ -95,6 +105,8 @@ class McxClientAppOptions:
     cert: str = "mcx.cert.crt"
     statecmd_param: str = "root/Logic/stateCommand"
     state_param: str = "root/Logic/state"
+    auto_engage: bool = False
+    run_during_states: list[State]|None = field(default_factory=lambda: [State.ENGAGED_S])
     start_stop_param: str|None = None
     
 
@@ -179,7 +191,7 @@ class McxClientApp:
     def wait_for(
         self,
         param: str,
-        value: object = True,
+        value: object,
         index: int = 0,
         timeout: float = 30,
         testinterval: float = 0.2,
@@ -195,7 +207,7 @@ class McxClientApp:
             index (int): Index in the parameter value array.
             timeout (float): Timeout in seconds. -1 or 0 for infinite.
             testinterval (float): Polling interval in seconds.
-            operat (str): Comparison operator as string (==, !=, <, <=, >, >=).
+            operat (str): Comparison operator as string (==, !=, <, <=, >, >=, in).
             block_stop_signal (bool): If True, ignore stop signal.
 
         Returns:
@@ -259,8 +271,8 @@ class McxClientApp:
         Sends the command every 5 seconds until engaged or stopped.
         """
         while self.running.get():
-            self.req.setParameter(self.options.statecmd_param, stateCommand["GOTO_ENGAGED_E"]).get()
-            if self.wait_for(self.options.state_param, state["ENGAGED_S"], timeout=5, block_stop_signal=True):
+            self.req.setParameter(self.options.statecmd_param, StateCommand.GOTO_ENGAGED_E.value).get()
+            if self.wait_for(self.options.state_param, State.ENGAGED_S.value, timeout=5, block_stop_signal=True):
                 break
             logging.info("ENGAGED state not reached, resending command...")
 
@@ -270,8 +282,8 @@ class McxClientApp:
         Sends the command every 5 seconds until off or stopped.
         """
         while self.running.get():
-            self.req.setParameter(self.options.statecmd_param, stateCommand["GOTO_OFF_E"]).get()
-            if self.wait_for(self.options.state_param, state["OFF_S"], timeout=5, block_stop_signal=True):
+            self.req.setParameter(self.options.statecmd_param, StateCommand.GOTO_OFF_E.value).get()
+            if self.wait_for(self.options.state_param, State.OFF_S.value, timeout=5, block_stop_signal=True):
                 break
             logging.info("OFF state not reached, resending command...")
 
@@ -323,7 +335,8 @@ class McxClientApp:
             start_stop_subscription.notify(self._start_stop_notify)
         
         try:
-            self.engage()
+            if self.options.auto_engage:
+                self.engage()
             
             while True:
                 try:
@@ -331,10 +344,23 @@ class McxClientApp:
                         logging.info("Waiting for StartStop parameter to be True...")
                         self.wait_for(self.options.start_stop_param, 0, operat="!=", block_stop_signal=True)
                         self.running.set(True)
-                    logging.info("System engaged. Running user action...")
+                        
+                    if self.options.run_during_states:
+                        logging.info("Waiting for system to be in allowed states...")
+                        self.wait_for(self.options.state_param, [s.value for s in self.options.run_during_states], operat="in", block_stop_signal=True)
+                        self.running.set(True)
+                    logging.info("Running user action...")
                     
                     # Run action method in the main thread
                     while self.running.get():
+                        # Check if still in allowed states
+                        if self.options.run_during_states:
+                            current_state = self.req.getParameter(self.options.state_param).get().value[0]
+                            if current_state not in [s.value for s in self.options.run_during_states]:
+                                logging.warning("System no longer in allowed states. Stopping action.")
+                                self.running.set(False)
+                                break
+                            
                         self.action()
                     
                     logging.info("Stop signal detected. Waiting for next start signal...")
@@ -360,11 +386,6 @@ class McxClientApp:
         finally:
             # Clean up
             self.running.set(False)
-            
-            try:
-                self.disengage()
-            except Exception as e:
-                logging.error(f"Error during disengage: {e}")
             
             try:
                 self.onExit()
@@ -456,14 +477,21 @@ class McxClientAppThread(McxClientApp):
             start_stop_subscription.notify(self._start_stop_notify)
         
         try:
-            self.engage()
+            if self.options.auto_engage:
+                self.engage()
             
             while True:
                 try:
                     if self.options.start_stop_param:
                         logging.info("Waiting for StartStop parameter to be True...")
-                        self.wait_for(self.options.start_stop_param, 0, operat="!=", block_stop_signal=True)
+                        self.wait_for(self.options.start_stop_param, 0, operat="!=", block_stop_signal=True, timeout=-1)
                         self.running.set(True)
+                    
+                    if self.options.run_during_states:
+                        logging.info("Waiting for system to be in allowed states...")
+                        self.wait_for(self.options.state_param, [s.value for s in self.options.run_during_states], operat="in", block_stop_signal=True, timeout=-1)
+                        self.running.set(True)
+                    
                     logging.info("System engaged. Running user action in separate thread...")
                     print(f"running: {self.running.get()}")
                     
@@ -512,11 +540,6 @@ class McxClientAppThread(McxClientApp):
                     logging.warning("Action thread did not stop within timeout. Thread may remain running.")
             
             try:
-                self.disengage()
-            except Exception as e:
-                logging.error(f"Error during disengage: {e}")
-            
-            try:
                 self.onExit()
             except Exception as e:
                 logging.error(f"Error during onExit: {e}")
@@ -540,6 +563,13 @@ class McxClientAppThread(McxClientApp):
         """
         try:
             while self.running.get():
+                if self.options.run_during_states:
+                    # Ensure still in allowed states
+                    current_state = self.req.getParameter(self.options.state_param).get().value[0]
+                    if current_state not in [s.value for s in self.options.run_during_states]:
+                        logging.warning("System no longer in allowed states. Stopping action.")
+                        self.running.set(False)
+                        break
                 self.action()
         except StopSignal:
             logging.info("Action thread received stop signal.")

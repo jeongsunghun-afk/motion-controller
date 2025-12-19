@@ -86,13 +86,24 @@ class RobotMotionApp(McxClientApp):
         logging.info("Motion program executing...")
         self.wait(10)  # Wait for motion to complete
         logging.info("Action complete.")
+        
+    def onExit(self)->None:
+        """
+        Cleanup before exiting: stop and disengage the robot.
+        """
+        if self.robot:
+            logging.info("Stopping and disengaging robot...")
+            self.robot.stop()
+            self.robot.disengage()
+            logging.info("Robot disengaged.")
 
 
 if __name__ == '__main__':
     new_options = McxClientAppOptions(
         login="",
         password="",
-        target_url="wss://",
+        target_url="",
+        auto_engage=True
     )
 
     app = RobotMotionApp(new_options)

@@ -21,7 +21,7 @@ class MyRobotApp(McxClientApp):
     def action(self) -> None:
         """
         Main action loop - executed repeatedly while running.
-        This runs in a separate thread.
+        This runs in the same thread.
         """
         self.action_count += 1
         logging.info(f"Action #{self.action_count}: Sleeping for 5 seconds...")
