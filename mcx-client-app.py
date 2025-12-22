@@ -28,16 +28,18 @@ Add this to the end of the parameters.json file in the config/user folder of the
       ]
     }
 """
-
-
-import logging
-from src.mcx_client_app import McxClientApp, McxClientAppOptions, StopSignal, ThreadSafeValue
-
 #
 #   Developer : Coen Smeets (Coen@vectioneer.com)
 #   All rights reserved. Copyright (c) 2025 VECTIONEER.
 #
 
+import sys
+from pathlib import Path
+
+# Add parent directory to path to import mcx_client_app
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from src.mcx_client_app import McxClientApp, McxClientAppOptions, ThreadSafeValue
 
 class CustomButtonApp(McxClientApp):
     """
@@ -87,7 +89,11 @@ class CustomButtonApp(McxClientApp):
         self.wait(1)  # Wait 1 second between increments
 
 if __name__ == "__main__":
-    client_options = McxClientAppOptions.from_json('config.json')
+    client_options = McxClientAppOptions(
+        login="",
+        password="",
+        target_url="",
+    )
 
     app = CustomButtonApp(client_options)
     app.run()

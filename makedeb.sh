@@ -45,7 +45,7 @@ if [ -d "${VENV_TARGET_DIR}/${VENV_REQ_DIR}" ]; then
     source ${VENV_TARGET_DIR}/bin/activate 
     pip3 install --no-index --find-links ${VENV_TARGET_DIR}/${VENV_REQ_DIR} -r ${VENV_TARGET_DIR}/${VENV_REQ_DIR}/requirements.txt > /dev/null
     deactivate
-    rm -rf ${VENV_TARGET_DIR}/${VENV_REQ_DIR}
+    # rm -rf ${VENV_TARGET_DIR}/${VENV_REQ_DIR}
 fi
 systemctl daemon-reload
 systemctl enable ${SERVICE}

@@ -12,6 +12,30 @@ class StateCommand(Enum):
     SAVE_CONFIGURATION = 254
     ACKNOWLEDGE_ERROR = 255
 
+    @classmethod
+    def from_value(cls, value):
+        """Convert int, str, or enum to StateCommand."""
+        if isinstance(value, cls):
+            return value
+        if isinstance(value, int):
+            return cls(value)
+        if isinstance(value, str):
+            try:
+                return cls[value]
+            except KeyError:
+                # Try as int string
+                try:
+                    return cls(int(value))
+                except Exception:
+                    pass
+        raise ValueError(f"Cannot convert {value!r} to {cls.__name__}")
+
+    @classmethod
+    def list_from(cls, values):
+        """Convert a list of mixed values to a list of StateCommand enums."""
+        if values is None:
+            return []
+        return [cls.from_value(v) for v in values]
 
 class State(Enum):
     """Enum for system states of the Motorcortex server."""
@@ -33,3 +57,28 @@ class State(Enum):
     RESET_FORCEDIDLE_T = 602
     TO_ESTOP_T = 700
     RESET_ESTOP_T = 701
+
+    @classmethod
+    def from_value(cls, value):
+        """Convert int, str, or enum to State."""
+        if isinstance(value, cls):
+            return value
+        if isinstance(value, int):
+            return cls(value)
+        if isinstance(value, str):
+            try:
+                return cls[value]
+            except KeyError:
+                # Try as int string
+                try:
+                    return cls(int(value))
+                except Exception:
+                    pass
+        raise ValueError(f"Cannot convert {value!r} to {cls.__name__}")
+
+    @classmethod
+    def list_from(cls, values):
+        """Convert a list of mixed values to a list of State enums."""
+        if values is None:
+            return []
+        return [cls.from_value(v) for v in values]

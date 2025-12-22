@@ -18,6 +18,7 @@ import operator
 from typing import Optional, TypeVar, Generic
 import copy
 from .McxClientAppOptions import McxClientAppOptions
+import traceback
 
 T = TypeVar('T')
 
@@ -115,7 +116,8 @@ class McxClientApp:
                 reconnect=True
             )
         except Exception as e:
-            logging.error(f"Failed to connect to {self.options.ip_address}. Exiting. Error: {e}")
+            tb = traceback.format_exc()
+            logging.error(f"Failed to connect to {self.options.ip_address}. Exiting. Error: {e}\nTraceback:\n{tb}")
             raise
 
     def wait_for(
@@ -232,14 +234,14 @@ class McxClientApp:
         6. Disengages and calls onExit() before disconnecting
         """
         self.connect()
-        logging.info("Connected to Motorcortex server.")
+        logging.debug("Connected to Motorcortex server.")
         self.startOp()
         if self.options.start_stop_param:
             self.req.setParameter(self.options.start_stop_param, 0).get()
             start_stop_subscription = self.sub.subscribe(self.options.start_stop_param, group_alias=self.__id, frq_divider=1000)
             if (start_stop_subscription is not None and start_stop_subscription.get().status == motorcortex.OK):
-                logging.info("StartStop parameter subscription successful.")
-            logging.info("Subscribed to StartStop parameter notifications.")
+                logging.debug("StartStop parameter subscription successful.")
+            logging.debug("Subscribed to StartStop parameter notifications.")
             start_stop_subscription.notify(self._start_stop_notify)
         
         try:
@@ -247,14 +249,14 @@ class McxClientApp:
                 try:
                     # Wait for StartStop and/or allowed states before starting action
                     need_start = bool(self.options.start_stop_param)
-                    need_states = bool(self.options.run_during_states)
+                    need_states = bool(self.options.allowed_states)
 
                     if need_start or need_states:
-                        allowed_states = [s.value for s in self.options.run_during_states] if need_states else None
+                        allowed_states = [s.value for s in self.options.allowed_states] if need_states else None
                         self.running.set(False)
                         try:
                             if need_start and need_states:
-                                logging.info("Waiting for StartStop == True and system in allowed states...")
+                                logging.debug("Waiting for StartStop == True and system in allowed states...")
                                 # Wait for StartStop to become true
                                 self.wait_for(self.options.start_stop_param, 0, operat="!=", block_stop_signal=True, timeout=-1)
                                 # Then wait for system state to be one of the allowed states
@@ -270,24 +272,24 @@ class McxClientApp:
                             self.running.set(True)
 
                         except StopSignal:
-                            logging.info("Stop signal received while waiting. Returning to top-level loop.")
+                            logging.debug("Stop signal received while waiting. Returning to top-level loop.")
                             self.running.set(False)
                             continue
-                    logging.info("Running user action...")
+                    logging.debug("Running user action...")
                     
                     # Run action method in the main thread
                     while self.running.get():
                         # Check if still in allowed states
-                        if self.options.run_during_states:
+                        if self.options.allowed_states:
                             current_state = self.req.getParameter(self.options.state_param).get().value[0]
-                            if current_state not in [s.value for s in self.options.run_during_states]:
+                            if current_state not in [s.value for s in self.options.allowed_states]:
                                 logging.warning("System no longer in allowed states. Stopping action.")
                                 self.running.set(False)
                                 break
                             
                         self.action()
                     
-                    logging.info("Stop signal detected. Waiting for next start signal...")
+                    logging.debug("Stop signal detected. Waiting for next start signal...")
                     # Continue loop to wait for next start signal
                     
                 except StopSignal:
@@ -297,7 +299,8 @@ class McxClientApp:
                     # Re-raise to outer handler
                     raise
                 except Exception as e:
-                    logging.error(f"An error occurred in action loop: {e}")
+                    tb = traceback.format_exc()
+                    logging.error(f"An error occurred in action loop: {e}\nTraceback:\n{tb}")
                     self.running.set(False)
                     # Continue loop to allow restart
                     
@@ -305,7 +308,8 @@ class McxClientApp:
             logging.info("Keyboard interrupt received. Shutting down...")
             self.running.set(False)
         except Exception as e:
-            logging.error(f"Critical error: {e}")
+            tb = traceback.format_exc()
+            logging.error(f"Critical error: {e}\nTraceback:\n{tb}")
             self.running.set(False)
         finally:
             # Clean up
@@ -314,19 +318,22 @@ class McxClientApp:
             try:
                 self.onExit()
             except Exception as e:
-                logging.error(f"Error during onExit: {e}")
+                tb = traceback.format_exc()
+                logging.error(f"Error during onExit: {e}\nTraceback:\n{tb}")
             
             if self.req:
                 try:
                     self.req.close()
                 except Exception as e:
-                    logging.error(f"Error closing request: {e}")
+                    tb = traceback.format_exc()
+                    logging.error(f"Error closing request: {e}\nTraceback:\n{tb}")
             if self.sub:
                 try:
                     self.sub.close()
                 except Exception as e:
-                    logging.error(f"Error closing subscription: {e}")
-            logging.info("Connection closed.")
+                    tb = traceback.format_exc()
+                    logging.error(f"Error closing subscription: {e}\nTraceback:\n{tb}")
+            logging.debug("Connection closed.")
     
     def _start_stop_notify(self, msg) -> None:
         """
@@ -338,7 +345,7 @@ class McxClientApp:
         """
         value = msg[0].value[0]
         if self.running.get() != (value != 0):
-            logging.info(f"StartStop parameter changed to {value}. Updating running state.")
+            logging.debug(f"StartStop parameter changed to {value}. Updating running state.")
             self.running.set(value != 0)
 
 
@@ -377,14 +384,14 @@ class McxClientAppThread(McxClientApp):
         6. Disengages and calls onExit() before disconnecting
         """
         self.connect()
-        logging.info("Connected to Motorcortex server.")
+        logging.debug("Connected to Motorcortex server.")
         self.startOp()
         if self.options.start_stop_param:
             self.req.setParameter(self.options.start_stop_param, 0).get()
             start_stop_subscription = self.sub.subscribe(self.options.start_stop_param, group_alias=self._MCxClientApp__id, frq_divider=1000)
             if (start_stop_subscription is not None and start_stop_subscription.get().status == motorcortex.OK):
-                logging.info("StartStop parameter subscription successful.")
-            logging.info("Subscribed to StartStop parameter notifications.")
+                logging.debug("StartStop parameter subscription successful.")
+            logging.debug("Subscribed to StartStop parameter notifications.")
             start_stop_subscription.notify(self._start_stop_notify)
         
         try:
@@ -392,34 +399,34 @@ class McxClientAppThread(McxClientApp):
                 try:
                     # Wait for StartStop and/or allowed states before starting action
                     need_start = bool(self.options.start_stop_param)
-                    need_states = bool(self.options.run_during_states)
+                    need_states = bool(self.options.allowed_states)
 
                     if need_start or need_states:
-                        allowed_states = [s.value for s in self.options.run_during_states] if need_states else None
+                        allowed_states = [s.value for s in self.options.allowed_states] if need_states else None
                         self.running.set(False)
                         try:
                             if need_start and need_states:
-                                logging.info("Waiting for StartStop == True and system in allowed states...")
+                                logging.debug("Waiting for StartStop == True and system in allowed states...")
                                 # Wait for StartStop to become true
                                 self.wait_for(self.options.start_stop_param, 0, operat="!=", block_stop_signal=True, timeout=-1)
                                 # Then wait for system state to be one of the allowed states
                                 self.wait_for(self.options.state_param, allowed_states, operat="in", block_stop_signal=True, timeout=-1)
                             elif need_start:
-                                logging.info("Waiting for StartStop == True...")
+                                logging.debug("Waiting for StartStop == True...")
                                 self.wait_for(self.options.start_stop_param, 0, operat="!=", block_stop_signal=True, timeout=-1)
                             else:
-                                logging.info("Waiting for system to be in allowed states...")
+                                logging.debug("Waiting for system to be in allowed states...")
                                 self.wait_for(self.options.state_param, allowed_states, operat="in", block_stop_signal=True, timeout=-1)
 
                             # Both conditions satisfied -> start action
                             self.running.set(True)
 
                         except StopSignal:
-                            logging.info("Stop signal received while waiting. Returning to top-level loop.")
+                            logging.debug("Stop signal received while waiting. Returning to top-level loop.")
                             self.running.set(False)
                             continue
                     
-                    logging.info("Running user action in separate thread...")
+                    logging.debug("Running user action in separate thread...")
                     print(f"running: {self.running.get()}")
                     
                     # Start action method in a separate thread
@@ -431,21 +438,22 @@ class McxClientAppThread(McxClientApp):
                         time.sleep(0.1)  # Check running state periodically
                     
                     # Stop signal received, stop the action thread
-                    logging.info("Stop signal detected in main thread.")
+                    logging.debug("Stop signal detected in main thread.")
                     if self._action_thread and self._action_thread.is_alive():
                         # Wait for action thread to stop (it should check running regularly)
                         self._action_thread.join(timeout=5.0)
                         if self._action_thread.is_alive():
                             logging.warning("Action thread did not stop gracefully within timeout.")
                     
-                    logging.info("Action thread stopped. Waiting for next start signal...")
+                    logging.debug("Action thread stopped. Waiting for next start signal...")
                     # Continue loop to wait for next start signal
                     
                 except KeyboardInterrupt:
                     # Re-raise to outer handler
                     raise
                 except Exception as e:
-                    logging.error(f"An error occurred in action loop: {e}")
+                    tb = traceback.format_exc()
+                    logging.error(f"An error occurred in action loop: {e}\nTraceback:\n{tb}")
                     self.running.set(False)
                     if self._action_thread and self._action_thread.is_alive():
                         self._action_thread.join(timeout=5.0)
@@ -455,13 +463,14 @@ class McxClientAppThread(McxClientApp):
             logging.info("Keyboard interrupt received. Shutting down...")
             self.running.set(False)
         except Exception as e:
-            logging.error(f"Critical error: {e}")
+            tb = traceback.format_exc()
+            logging.error(f"Critical error: {e}\nTraceback:\n{tb}")
             self.running.set(False)
         finally:
             # Clean up: stop action thread if still running
             self.running.set(False)
             if self._action_thread and self._action_thread.is_alive():
-                logging.info("Stopping action thread...")
+                logging.debug("Stopping action thread...")
                 self._action_thread.join(timeout=5.0)
                 if self._action_thread.is_alive():
                     logging.warning("Action thread did not stop within timeout. Thread may remain running.")
@@ -469,18 +478,21 @@ class McxClientAppThread(McxClientApp):
             try:
                 self.onExit()
             except Exception as e:
-                logging.error(f"Error during onExit: {e}")
+                tb = traceback.format_exc()
+                logging.error(f"Error during onExit: {e}\nTraceback:\n{tb}")
             
             if self.req:
                 try:
                     self.req.close()
                 except Exception as e:
-                    logging.error(f"Error closing request: {e}")
+                    tb = traceback.format_exc()
+                    logging.error(f"Error closing request: {e}\nTraceback:\n{tb}")
             if self.sub:
                 try:
                     self.sub.close()
                 except Exception as e:
-                    logging.error(f"Error closing subscription: {e}")
+                    tb = traceback.format_exc()
+                    logging.error(f"Error closing subscription: {e}\nTraceback:\n{tb}")
             logging.info("Connection closed.")
     
     def _action_wrapper(self) -> None:
@@ -490,10 +502,10 @@ class McxClientAppThread(McxClientApp):
         """
         try:
             while self.running.get():
-                if self.options.run_during_states:
+                if self.options.allowed_states:
                     # Ensure still in allowed states
                     current_state = self.req.getParameter(self.options.state_param).get().value[0]
-                    if current_state not in [s.value for s in self.options.run_during_states]:
+                    if current_state not in [s.value for s in self.options.allowed_states]:
                         logging.warning("System no longer in allowed states. Stopping action.")
                         self.running.set(False)
                         break
@@ -501,7 +513,8 @@ class McxClientAppThread(McxClientApp):
         except StopSignal:
             logging.info("Action thread received stop signal.")
         except Exception as e:
-            logging.error(f"Error in action thread: {e}")
+            tb = traceback.format_exc()
+            logging.error(f"Error in action thread: {e}\nTraceback:\n{tb}")
             self.running.set(False)
 
 
