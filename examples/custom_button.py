@@ -35,65 +35,93 @@ Add this to the end of the parameters.json file in the config/user folder of the
 
 import sys
 from pathlib import Path
+import logging
+logging.basicConfig(level=logging.INFO)
 
 # Add parent directory to path to import mcx_client_app
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.mcx_client_app import McxClientApp, McxClientAppOptions, ThreadSafeValue
+from motorcortex import Subscription
+
+
+class Button:
+    def __init__(self, param: str, raising_edge_callback: callable = lambda: None, falling_edge_callback: callable = lambda: None):
+        self.param: str = param
+        self.subscription: Subscription = None
+        self.state: ThreadSafeValue[bool] = ThreadSafeValue(False)
+        self.__state_saved: bool = False
+        self.raising_edge_callback: callable = raising_edge_callback
+        self.falling_edge_callback: callable = falling_edge_callback
+        self._clicked: ThreadSafeValue[bool] = ThreadSafeValue(False) # To track click events if polling happens slower than button presses
+
+    def subscription_callback(self, msg: list) -> None:
+        """Callback for button press - only trigger on rising edge (0 -> 1). (Happens in the subscription thread)"""
+        value = msg[0].value[0]
+        if value != 0 and not self.state.get():  # Button pressed (rising edge)
+            self.state.set(True)
+            self._clicked.set(True)  # Mark a click event
+        elif value == 0 and self.state.get():  # Button released (falling edge)
+            self.state.set(False)
+
+    def poll(self) -> None:
+        """Poll the button state and call the appropriate callbacks on edge detection."""
+        # Always detect a click, even if it was very fast
+        if self._clicked.get():
+            self.raising_edge_callback()
+            self._clicked.set(False)
+        # Optionally, handle falling edge as before
+        current_state = self.state.get()
+        if not current_state and self.__state_saved:
+            self.falling_edge_callback()
+            self.__state_saved = False
+        elif current_state and not self.__state_saved:
+            self.__state_saved = True
 
 class CustomButtonApp(McxClientApp):
     """
-    Application that monitors and prints the tool pose.
+    Application that counts and prints the counter value, resetting it when the custom button is pressed.
     """
     def __init__(self, options: McxClientAppOptions):
         super().__init__(options)
-        self.buttonSubscription = None
+        self.reset_button: Button = Button(
+            param = 'root/UserParameters/GUI/PythonScript01/resetButton',
+            raising_edge_callback = self.reset_counter
+        )
         self.counter: int = 0
-        self.__reset: ThreadSafeValue[bool] = ThreadSafeValue(False)
+        
     
     def startOp(self) -> None:
         """
         Subscribe to button updates.
         """
-        self.buttonSubscription = self.sub.subscribe(
+        self.reset_button.subscription = self.sub.subscribe(
             'root/UserParameters/GUI/PythonScript01/resetButton', 
             "Group1", 
             frq_divider=10 
         )
-        self.buttonSubscription.notify(self.__button_callback)
+        self.reset_button.subscription.notify(self.reset_button.subscription_callback)
         self.req.setParameter('root/UserParameters/GUI/PythonScript01/Counter', 0).get()
-    
-    def __button_callback(self, msg) -> None:
-        """Callback for button press - only trigger on rising edge (0 -> 1). (Happens in the subscription thread)"""
-        value = msg[0].value[0]
-        if value != 0:  # Button pressed (rising edge)
-            self.__reset.set(True)
+        
+    def reset_counter(self) -> None:
+      logging.info("Counter reset!")
+      self.counter = 0
+      # self.req.setParameter('root/UserParameters/GUI/PythonScript01/resetButton', 0).get()
 
-    def __reset_counter(self) -> None:
-        self.counter = 0
-        self.__reset.set(False)
-        self.req.setParameter('root/UserParameters/GUI/PythonScript01/resetButton', 0).get()
-    
     def action(self) -> None:
         """
         Increment counter and check for reset button press.
         """
-        if self.__reset.get():
-            self.__reset_counter()
-            print("Counter reset!")
-        else:
-            self.counter += 1
-            print(f"Counter: {self.counter}")
-            self.req.setParameter('root/UserParameters/GUI/PythonScript01/Counter', self.counter).get()
+        self.counter += 1
+        print(f"Counter: {self.counter}")
+        self.req.setParameter('root/UserParameters/GUI/PythonScript01/Counter', self.counter).get()
+        
+        self.reset_button.poll()
         
         self.wait(1)  # Wait 1 second between increments
 
 if __name__ == "__main__":
-    client_options = McxClientAppOptions(
-        login="",
-        password="",
-        target_url="",
-    )
+    client_options = McxClientAppOptions.from_json("config.json")
 
     app = CustomButtonApp(client_options)
     app.run()
