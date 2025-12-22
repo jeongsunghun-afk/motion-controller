@@ -1,12 +1,12 @@
 #!/bin/bash
 
 # Set variables
-PACKAGE_NAME="mcx-client-app"
+PACKAGE_NAME="datalogger"
 VERSION="1.0"
 ARCHITECTURE="all"
 MAINTAINER="Vectioneer B.V. <info@vectioneer.com>"
 DESCRIPTION="A client application for getting and setting data in a Motorcortex Control Application"
-PYTHON_SCRIPT="mcx-client-app.py"
+PYTHON_SCRIPT="datalogger.py"
 PYTHON_MODULES="src" # directories, space separated list
 SERVICE="${PACKAGE_NAME}"
 BUILDFOLDER="build"
