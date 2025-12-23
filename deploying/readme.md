@@ -13,8 +13,6 @@ Then, from your project root, run:
 docker run --rm -v "$PWD:/workspace" -w /workspace mcx-2025-03-37-deb-builder service_config.json
 ```
 
-- Replace `service_config.json` with your own config file if needed.
-- The resulting `.deb` file will be in your local `build/` directory.
 
 
 
@@ -34,7 +32,6 @@ If you want to use a custom systemd service template, add the `SERVICE_TEMPLATE`
 Your custom template file must be accessible inside the container (e.g. mounted via the Docker volume).
 
 
----
 
 ## service_config.json Options
 
@@ -42,25 +39,11 @@ The `service_config.json` file is a JSON configuration file that controls how th
 
 ### Required options
 
-- `PACKAGE_NAME` (string): Name of the package (used for .deb name, service, etc).
-- `PYTHON_SCRIPT` (string): Main Python script to run as the service.
-- `PYTHON_MODULES` (string): Space-separated list of directories to include (e.g. "src").
 
 
 
 ### Optional options
 
-- `VERSION` (string): Package version. Default: "1.0"
-- `ARCHITECTURE` (string): Target architecture. Default: "all"
-- `MAINTAINER` (string): Maintainer info. Default: "Vectioneer B.V. <info@vectioneer.com>"
-- `DESCRIPTION` (string): Description of the package. Default: "A client application for getting and setting data in a Motorcortex Control Application"
-- `SERVICE` (string): Systemd service name. Default: same as `PACKAGE_NAME`.
-- `BUILDFOLDER` (string): Build output folder. Default: "build"
-- `VENV_REQ_DIR` (string): Directory for Python wheels/requirements. Default: "venv-req"
-- `VENV_TARGET_DIR` (string): Target venv install dir. Default: `/usr/local/.venv.${PACKAGE_NAME}`
-- `REQUIREMENTS_FILE` (string): Path to requirements.txt for building wheels. Optional. If not set or file missing, wheels are not built.
-- `SERVICE_TEMPLATE` (string): Path to a custom systemd service template file. Optional. If not set, the default `template.service.in` included in the container is used.
-- `DEBUG_ON` (bool): If true, enables verbose debug output in the build script. Default: false.
 
 ### Example
 
@@ -89,7 +72,28 @@ Remove all Docker images:
 docker rmi $(docker images -a -q)
 ```
 
+
 Destroy them all forcefully:
 ```bash
 docker container prune -f && docker rmi $(docker images -a -q --filter 'dangling=true') --force
 ```
+
+
+
+## Using makeDeb.sh Without Docker
+
+You can also run `makeDeb.sh` directly on your host system (outside Docker):
+
+```bash
+bash Docker-build/makeDeb.sh service_config.json
+```
+
+**Important:** When running locally, set the `SERVICE_TEMPLATE` option in your config to `Docker-build/template.service.in`:
+
+```json
+{
+	"SERVICE_TEMPLATE": "Docker-build/template.service.in"
+}
+```
+
+- Building Python wheels outside the Docker image may result in wheels that are not fully portable or compatible with the Motorcortex images.
