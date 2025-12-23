@@ -17,21 +17,20 @@ RUN yum install -y \
     blas-devel lapack-devel gfortran \
     openssl-devel pkgconfig \
     libquadmath libquadmath-devel \
+    jq \
  && yum clean all
 
 # Ensure pip, setuptools, wheel, Cython, and auditwheel are up-to-date
 RUN python3.10 -m pip install --upgrade pip setuptools wheel cython auditwheel
 
-# Default command: build wheels from mounted requirements.txt and repair them into wheels_out
-CMD ["bash", "-c", "\
-    mkdir -p wheels && \
-    pip wheel -r requirements.txt -w wheels_tmp && \
-    for whl in wheels_tmp/*.whl; do \
-        auditwheel repair \"$whl\" -w wheels 2>/dev/null || cp \"$whl\" wheels/; \
-    done && \
-    rm -rf wheels_tmp && \
-    if [ -n \"$USER_ID\" ] && [ -n \"$GROUP_ID\" ]; then \
-        chown -R $USER_ID:$GROUP_ID wheels 2>/dev/null || true; \
-    fi && \
-    chmod -R a+rwX wheels \
-"]
+# Copy makeDeb.sh and default_service_config.json into the image
+COPY makeDeb.sh /usr/local/bin/makeDeb.sh
+RUN chmod +x /usr/local/bin/makeDeb.sh
+COPY default_service_config.json /usr/local/bin/default_service_config.json
+COPY template.service.in /usr/local/bin/template.service.in
+
+# Set working directory for user mounts
+WORKDIR /workspace
+
+# Default entrypoint: run makeDeb.sh, so you can just pass the config as argument
+ENTRYPOINT ["makeDeb.sh"]

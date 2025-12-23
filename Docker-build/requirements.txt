@@ -1,6 +1,0 @@
-# requirements.txt
-requests
-plotly
-numpy        # C-extension, checks compiled wheels
-scipy        # C/Fortran extension
-motorcortex-python

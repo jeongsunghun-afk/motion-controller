@@ -122,5 +122,6 @@ dependencies.*/
 stubs/
 data/
 config.json
+service_config.json
 
 *.tar

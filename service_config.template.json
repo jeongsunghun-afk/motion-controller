@@ -1,0 +1,7 @@
+{
+    "PACKAGE_NAME": "mcx-client-app",
+    "PYTHON_SCRIPT": "mcx-client-app.py",
+    "PYTHON_MODULES": "src",
+    "VENV_REQ_DIR": "venv-req",
+    "REQUIREMENTS_FILE": "requirements.txt"
+}
