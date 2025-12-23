@@ -1,5 +1,5 @@
 [Unit]
-Description=Client application for Motorcortex
+Description=@DESCRIPTION@
 After=ethercat.target motorcortex.service
 PartOf=motorcortex.service
 StartLimitIntervalSec=0

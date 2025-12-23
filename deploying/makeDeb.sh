@@ -101,6 +101,9 @@ MAINTAINER="$(get_config_value MAINTAINER)"
 debug "MAINTAINER: $MAINTAINER"
 DESCRIPTION="$(get_config_value DESCRIPTION)"
 debug "DESCRIPTION: $DESCRIPTION"
+if [ -z "$DESCRIPTION" ] || [ "$DESCRIPTION" = "null" ]; then
+    DESCRIPTION="Client application for $PACKAGE_NAME"
+fi
 SERVICE="$(get_config_value SERVICE)"
 if [ -z "$SERVICE" ] || [ "$SERVICE" = "null" ]; then
     SERVICE="$PACKAGE_NAME"
@@ -228,15 +231,25 @@ for MOD in ${PYTHON_MODULES}; do
 done
 
 
+
 # Get service template path from config, fallback to default
 SERVICE_TEMPLATE="$(get_config_value SERVICE_TEMPLATE)"
 if [ -z "$SERVICE_TEMPLATE" ] || [ "$SERVICE_TEMPLATE" = "null" ]; then
     SERVICE_TEMPLATE="/usr/local/bin/template.service.in"
 fi
 debug "Using service template: $SERVICE_TEMPLATE"
+
+# Get CONFIG_PATH from config, fallback to default
+CONFIG_PATH_FROM_CONFIG="$(get_config_value CONFIG_PATH)"
+if [ -z "$CONFIG_PATH_FROM_CONFIG" ] || [ "$CONFIG_PATH_FROM_CONFIG" = "null" ]; then
+    CONFIG_PATH_FROM_CONFIG="/etc/motorcortex/config/services/${PACKAGE_NAME}.json"
+fi
+debug "Using CONFIG_PATH: $CONFIG_PATH_FROM_CONFIG"
+
 # Copy the service file (template) and replace start command
 cp "$SERVICE_TEMPLATE" ${BUILDFOLDER}/${PACKAGE_NAME}_${VERSION}/etc/systemd/system/${SERVICE}.service
-sed -i "s|@EXEC_START@|/bin/bash -c 'source ${VENV_TARGET_DIR}/bin/activate \&\& CONFIG_PATH=\"/etc/motorcortex/config/services/${PACKAGE_NAME}.json\" python3 ${VENV_TARGET_DIR}/${PYTHON_SCRIPT}; deactivate'|g" ${BUILDFOLDER}/${PACKAGE_NAME}_${VERSION}/etc/systemd/system/${SERVICE}.service
+sed -i "s|@EXEC_START@|/bin/bash -c 'source ${VENV_TARGET_DIR}/bin/activate \&\& CONFIG_PATH=\"${CONFIG_PATH_FROM_CONFIG}\" python3 ${VENV_TARGET_DIR}/${PYTHON_SCRIPT}; deactivate'|g" ${BUILDFOLDER}/${PACKAGE_NAME}_${VERSION}/etc/systemd/system/${SERVICE}.service
+sed -i "s|@DESCRIPTION@|$DESCRIPTION|g" ${BUILDFOLDER}/${PACKAGE_NAME}_${VERSION}/etc/systemd/system/${SERVICE}.service
 
 
 # Set executable permissions
