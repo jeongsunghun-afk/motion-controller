@@ -30,7 +30,7 @@ class ExampleMcxClientApp(McxClientApp):
         # Start your subscriptions here and set values after connection is established
         pass
 
-    def action(self) -> None:
+    def iterate(self) -> None:
         """
         Increment counter and check for reset button press.
         """

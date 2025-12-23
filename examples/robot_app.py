@@ -51,7 +51,7 @@ class RobotMotionApp(McxClientApp):
         
         logging.info("Robot ready for operation.")
     
-    def action(self) -> None:
+    def iterate(self) -> None:
         """
         Execute robot motion: move left and right.
         """
@@ -85,7 +85,7 @@ class RobotMotionApp(McxClientApp):
         
         logging.info("Motion program executing...")
         self.wait(10)  # Wait for motion to complete
-        logging.info("Action complete.")
+        logging.info("Iteration complete.")
         
     def onExit(self)->None:
         """

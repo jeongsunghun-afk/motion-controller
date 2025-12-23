@@ -22,9 +22,9 @@ class McxClientAppConfiguration:
             Used to control the robot or system state.
         state_param (str): Parameter path for reading the current state from the server (default: 'root/Logic/state').
             Used to monitor the robot or system state.
-        run_during_states (list[State]|None): List of allowed states during which the action() method can run (default None).
-            If the system is not in one of these states, the action() method will not execute.
-            If empty or None, the action() method can run in any state.
+        run_during_states (list[State]|None): List of allowed states during which the iterate() method can run (default None).
+            If the system is not in one of these states, the iterate() method will not execute.
+            If empty or None, the iterate() method can run in any state.
         start_stop_param (str|None): Optional parameter path for start/stop control (default: None).
             If provided, the application will monitor this parameter to start or stop operations.
     

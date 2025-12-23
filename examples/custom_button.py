@@ -130,7 +130,7 @@ class CustomButtonApp(McxClientAppThread):
       self.counter = 0
       # self.req.setParameter('root/UserParameters/GUI/PythonScript01/resetButton', 0).get()
 
-    def action(self) -> None:
+    def iterate(self) -> None:
         """
         Increment counter and check for reset button press.
         """
