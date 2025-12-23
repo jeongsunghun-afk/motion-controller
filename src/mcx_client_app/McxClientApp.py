@@ -74,10 +74,10 @@ class McxClientApp:
     Base client application for interacting with a Motorcortex server.
     Provides methods to connect, engage, disengage, and run user-defined actions with state monitoring.
     
-    This base class does NOT use a separate thread for the action() method.
+    This base class does NOT use a separate thread for the iterate() method.
     
     To use this class, inherit from it and override the following methods:
-        - action(): Main action loop (called repeatedly while running)
+        - iterate(): Main iterate loop (called repeatedly while running)
         - startOp(): Called after connection is established (optional)
         - onExit(): Called before disconnecting (optional)
     """
@@ -271,15 +271,15 @@ class McxClientApp:
                 logging.error(f"Exception while subscribing to control parameters: {e}\nTraceback:\n{tb}")
                 raise
 
-    def action(self) -> None:
+    def iterate(self) -> None:
         """
-        Main action loop called repeatedly while the system is running.
+        Main iterate loop called repeatedly while the system is running.
         Override this method in your subclass to implement custom behavior.
         
         In the base class, this method runs in the main thread.
         Use wait() or wait_for() methods which will raise StopSignal when stopped.
         """
-        raise NotImplementedError("The action() method must be overridden in the subclass.")
+        raise NotImplementedError("The iterate() method must be overridden in the subclass.")
     
     def startOp(self) -> None:
         """
@@ -297,13 +297,13 @@ class McxClientApp:
 
     def run(self) -> None:
         """
-        Run the client application: connect, engage, run action, disengage, disconnect.
+        Run the client application: connect, engage, run iterate, disengage, disconnect.
         
         This method:
         1. Connects to the Motorcortex server
         2. Calls startOp() for initialization
         3. Engages the system
-        4. Runs the action() method in the main thread
+        4. Runs the iterate() method in the main thread
         5. Monitors start/stop signals
         6. Disengages and calls onExit() before disconnecting
         """
@@ -328,23 +328,23 @@ class McxClientApp:
                     while not self.running.get():
                         time.sleep(0.1)
                     
-                    logging.info("Running user action...")
-                    # Run action method in the main thread
+                    logging.info("Running user iterate...")
+                    # Run iterate method in the main thread
                     while self.running.get():
-                        self.action()
+                        self.iterate()
                     
                     logging.debug("Stop signal detected. Waiting for next start signal...")
                     # Continue loop to wait for next start signal
                     
                 except StopSignal:
-                    logging.info("Action received stop signal.")
+                    logging.info("Iterate received stop signal.")
                     self.running.set(False)
                 except KeyboardInterrupt:
                     # Re-raise to outer handler
                     raise
                 except Exception as e:
                     tb = traceback.format_exc()
-                    logging.error(f"An error occurred in action loop: {e}\nTraceback:\n{tb}")
+                    logging.error(f"An error occurred in iterate loop: {e}\nTraceback:\n{tb}")
                     self.running.set(False)
                     # Continue loop to allow restart
                     
@@ -384,11 +384,11 @@ class McxClientAppThread(McxClientApp):
     """
     Threaded client application for interacting with a Motorcortex server.
     
-    This class extends MCxClientApp and runs the action() method in a separate thread,
+    This class extends MCxClientApp and runs the iterate() method in a separate thread,
     allowing the main thread to monitor start/stop signals independently.
     
     To use this class, inherit from it and override the following methods:
-        - action(): Main action loop (called repeatedly in a separate thread)
+        - iterate(): Main iterate loop (called repeatedly in a separate thread)
         - startOp(): Called after connection is established (optional)
         - onExit(): Called before disconnecting (optional)
     """
@@ -404,13 +404,13 @@ class McxClientAppThread(McxClientApp):
     
     def run(self) -> None:
         """
-        Run the client application with action() in a separate thread.
+        Run the client application with iterate() in a separate thread.
         
         This method:
         1. Connects to the Motorcortex server
         2. Calls startOp() for initialization
         3. Engages the system
-        4. Runs the action() method in a separate thread
+        4. Runs the iterate() method in a separate thread
         5. Main thread monitors start/stop signals
         6. Disengages and calls onExit() before disconnecting
         """
@@ -435,9 +435,9 @@ class McxClientAppThread(McxClientApp):
                     while not self.running.get():
                         time.sleep(0.1)
                     
-                    logging.info("Running user action in separate thread...")
+                    logging.info("Running user iterate in separate thread...")
                     
-                    # Start action method in a separate thread
+                    # Start iterate method in a separate thread
                     self._action_thread = threading.Thread(target=self._action_wrapper, daemon=True)
                     self._action_thread.start()
                     
@@ -445,15 +445,15 @@ class McxClientAppThread(McxClientApp):
                     while self.running.get():
                         time.sleep(0.1)  # Check running state periodically
                     
-                    # Stop signal received, stop the action thread
+                    # Stop signal received, stop the iterate thread
                     logging.debug("Stop signal detected in main thread.")
                     if self._action_thread and self._action_thread.is_alive():
                         # Wait for action thread to stop (it should check running regularly)
                         self._action_thread.join(timeout=5.0)
                         if self._action_thread.is_alive():
-                            logging.warning("Action thread did not stop gracefully within timeout.")
+                            logging.warning("Iterate thread did not stop gracefully within timeout.")
                     
-                    logging.debug("Action thread stopped. Waiting for next start signal...")
+                    logging.debug("Iterate thread stopped. Waiting for next start signal...")
                     # Continue loop to wait for next start signal
                     
                 except KeyboardInterrupt:
@@ -475,7 +475,7 @@ class McxClientAppThread(McxClientApp):
             logging.error(f"Critical error: {e}\nTraceback:\n{tb}")
             self.running.set(False)
         finally:
-            # Clean up: stop action thread if still running
+            # Clean up: stop iterate thread if still running
             self.running.set(False)
             if self._action_thread and self._action_thread.is_alive():
                 logging.debug("Stopping action thread...")
@@ -505,17 +505,17 @@ class McxClientAppThread(McxClientApp):
     
     def _action_wrapper(self) -> None:
         """
-        Wrapper for running action() method in a loop until stopped.
+        Wrapper for running iterate() method in a loop until stopped.
         Runs in a separate thread.
         """
         try:
             while self.running.get():
-                self.action()
+                self.iterate()
         except StopSignal:
-            logging.info("Action thread received stop signal.")
+            logging.info("Iterate thread received stop signal.")
         except Exception as e:
             tb = traceback.format_exc()
-            logging.error(f"Error in action thread: {e}\nTraceback:\n{tb}")
+            logging.error(f"Error in iterate thread: {e}\nTraceback:\n{tb}")
             self.running.set(False)
 
 
@@ -530,15 +530,15 @@ if __name__ == '__main__':
             self.custom_counter = 0
             logging.info("ExampleApp initialized.")
         
-        def action(self) -> None:
+        def iterate(self) -> None:
             """
-            Main action: sleep for 5 seconds.
+            Main iterate: sleep for 5 seconds.
             This runs in a separate thread when using McxClientAppThread.
             """
             self.custom_counter += 1
-            logging.info(f"Action {self.custom_counter}: Sleeping for 5 seconds...")
+            logging.info(f"Iterate {self.custom_counter}: Sleeping for 5 seconds...")
             self.wait(5)
-            logging.info("Action complete.")
+            logging.info("Iterate complete.")
         
         def startOp(self) -> None:
             """
@@ -552,7 +552,7 @@ if __name__ == '__main__':
             """
             Cleanup before exit.
             """
-            logging.info(f"Exiting after {self.custom_counter} actions.")
+            logging.info(f"Exiting after {self.custom_counter} iterations.")
 
     options = McxClientAppOptions.from_json('config.json')
 

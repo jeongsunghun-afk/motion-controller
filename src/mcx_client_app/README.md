@@ -87,10 +87,10 @@ Dataclass for configuration options:
 - Any additional keys in your config file are set as attributes
 
 ### `McxClientApp`
-Base client class that runs the `action()` method in the main thread. Use this when you want simple, sequential execution without threading complexity.
+Base client class that runs the `iterate()` method in the main thread. Use this when you want simple, sequential execution without threading complexity.
 
 ### `McxClientAppThread`
-Derived class that runs the `action()` method in a separate thread while the main thread monitors start/stop signals. Use this when you need concurrent execution or when actions should run independently of signal monitoring.
+Derived class that runs the `iterate()` method in a separate thread while the main thread monitors start/stop signals. Use this when you need concurrent execution or when actions should run independently of signal monitoring.
 
 ### `ThreadSafeValue[T]`
 Generic thread-safe single-value container for cross-thread communication.
@@ -106,7 +106,7 @@ class DataLoggerOptions(McxClientAppOptions):
     pass  # All config keys are set as attributes
 
 class DataLoggerApp(McxClientApp):
-    def action(self):
+    def iterate(self):
         # Your logging logic here
         self.wait(1)
 

@@ -46,13 +46,13 @@ class StartButtonApp(McxClientApp):
     """
     Example application demonstrating start/stop button control.
     """
-    def action(self) -> None:
+    def iterate(self) -> None:
         """
-        Main action: wait for 5 seconds.
+        Main iterate: wait for 5 seconds.
         """
-        logging.info("Action started - waiting 5 seconds...")
+        logging.info("Iterate started - waiting 5 seconds...")
         self.wait(5)
-        logging.info("Action complete.")
+        logging.info("Iterate complete.")
     
     def onExit(self) -> None:
         """

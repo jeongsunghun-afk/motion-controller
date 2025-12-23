@@ -59,7 +59,7 @@ def timespec_to_msec(timestamp):
 class dataLoggerClientApp(McxClientApp):
     """
     Application that implements thread-safe data logging with subscriptions.
-    Data is collected from subscription callbacks and saved to CSV in the action thread.
+    Data is collected from subscription callbacks and saved to CSV in the iterate thread.
     """
     def __init__(self, options: McxClientAppOptions):
         """Initialize the data logger client app.
@@ -202,8 +202,8 @@ class dataLoggerClientApp(McxClientApp):
         except Exception as e:
             logging.error(f"Error saving data: {e}")
                 
-    def action(self) -> None:
-        """Perform the data logging action (runs in action thread).
+    def iterate(self) -> None:
+        """Perform the data logging iterat (runs in iterate thread).
         
         Retrieves data from the queue in batches and saves it periodically to CSV.
         """
