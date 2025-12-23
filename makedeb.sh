@@ -1,12 +1,12 @@
 #!/bin/bash
 
 # Set variables
-PACKAGE_NAME="mcx-client-app"
+PACKAGE_NAME="test-wheels"
 VERSION="1.0"
 ARCHITECTURE="all"
 MAINTAINER="Vectioneer B.V. <info@vectioneer.com>"
 DESCRIPTION="A client application for getting and setting data in a Motorcortex Control Application"
-PYTHON_SCRIPT="mcx-client-app.py"
+PYTHON_SCRIPT="Test_wheels.py"
 PYTHON_MODULES="src" # directories, space separated list
 SERVICE="${PACKAGE_NAME}"
 BUILDFOLDER="build"
@@ -43,6 +43,8 @@ EOF
 cat > ${BUILDFOLDER}/${PACKAGE_NAME}_${VERSION}/DEBIAN/postinst << EOF
 if [ -d "${VENV_TARGET_DIR}/${VENV_REQ_DIR}" ]; then
     source ${VENV_TARGET_DIR}/bin/activate 
+    sudo chown -R \$USER:\$USER ${VENV_TARGET_DIR}/${VENV_REQ_DIR}
+    chmod -R u+rwX ${VENV_TARGET_DIR}/${VENV_REQ_DIR}
     pip3 install --no-index --find-links ${VENV_TARGET_DIR}/${VENV_REQ_DIR} -r ${VENV_TARGET_DIR}/${VENV_REQ_DIR}/requirements.txt > /dev/null
     deactivate
     # rm -rf ${VENV_TARGET_DIR}/${VENV_REQ_DIR}
