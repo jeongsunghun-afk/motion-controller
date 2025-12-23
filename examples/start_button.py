@@ -39,7 +39,7 @@ from pathlib import Path
 # Add parent directory to path to import mcx_client_app
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.mcx_client_app import McxClientApp, McxClientAppOptions
+from src.mcx_client_app import McxClientApp, McxClientAppConfiguration
 
 
 class StartButtonApp(McxClientApp):
@@ -63,7 +63,7 @@ class StartButtonApp(McxClientApp):
 
 
 if __name__ == '__main__':
-    new_options = McxClientAppOptions(
+    new_options = McxClientAppConfiguration(
         login="",
         password="",
         target_url="",

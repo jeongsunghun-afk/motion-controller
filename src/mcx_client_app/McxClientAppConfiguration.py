@@ -3,7 +3,7 @@ import os
 import json
 from .state_def import State
 
-class McxClientAppOptions:
+class McxClientAppConfiguration:
     """
     Configuration options for McxClientApp.
 
@@ -30,7 +30,7 @@ class McxClientAppOptions:
     
     Note:
         When inheriting from this class, ensure to call super().__init__(**kwargs) after initialising the class parameters. For example,
-            class CustomOptions(McxClientAppOptions):
+            class CustomOptions(McxClientAppConfiguration):
                 def __init__(self, custom_param: str = "default", **kwargs):
                     self.custom_param = custom_param
                     super().__init__(**kwargs)
@@ -80,14 +80,14 @@ class McxClientAppOptions:
         result = dict(self.__dict__)
         # Convert enums to names for serialization
         result["run_during_states"] = [state.name for state in self._run_during_states]
-        result.pop('_McxClientAppOptions__deployed', None)
+        result.pop('_McxClientAppConfiguration__deployed', None)
         return result
 
     def __str__(self) -> str:
         return str(self.as_dict())
 
     @classmethod
-    def from_json(cls, json_file: str) -> 'McxClientAppOptions':
+    def from_json(cls, json_file: str) -> 'McxClientAppConfiguration':
         config_path = os.environ.get("CONFIG_PATH", None)
         if config_path is not None:
             return cls()

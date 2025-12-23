@@ -39,7 +39,7 @@ from pathlib import Path
 # Add parent directory to path to import mcx_client_app
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.mcx_client_app import McxClientApp, McxClientAppOptions, ThreadSafeValue
+from src.mcx_client_app import McxClientApp, McxClientAppConfiguration, ThreadSafeValue
 from motorcortex import Subscription
 import os
 import csv
@@ -61,11 +61,11 @@ class dataLoggerClientApp(McxClientApp):
     Application that implements thread-safe data logging with subscriptions.
     Data is collected from subscription callbacks and saved to CSV in the action thread.
     """
-    def __init__(self, options: McxClientAppOptions):
+    def __init__(self, options: McxClientAppConfiguration):
         """Initialize the data logger client app.
         
         Args:
-            options (McxClientAppOptions): Options for the MCX client app.
+            options (McxClientAppConfiguration): Options for the MCX client app.
             paths (list[str]): List of parameter paths to log.
             file_path (str): Path to the file where data will be logged.
             divider (int, optional): Frequency divider for logging. Defaults to 10.
@@ -253,7 +253,7 @@ class dataLoggerClientApp(McxClientApp):
         logging.info("Data logger cleanup complete.")
         
 if __name__ == "__main__":
-    class DataLoggerOptions(McxClientAppOptions):
+    class DataLoggerOptions(McxClientAppConfiguration):
         def __init__(self, **args):
             # it is important to set default values before calling super().__init__()
             self.paths_to_log: list[str] = []
@@ -270,7 +270,7 @@ if __name__ == "__main__":
     
     print("\nNOTE: Update the dataLogger_config.json file to set login, password, target_url, and parameters to log.\n\n")
             
-    logging.info(f"McxClientAppOptions initialized: {options.as_dict()}")
+    logging.info(f"McxClientAppConfiguration initialized: {options.as_dict()}")
     
     app = dataLoggerClientApp(
         options=options

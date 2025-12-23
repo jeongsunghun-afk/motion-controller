@@ -11,13 +11,13 @@ logging.basicConfig(level=logging.INFO)
 # Add parent directory to path to import mcx_client_app
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.mcx_client_app import McxClientApp, McxClientAppOptions, ThreadSafeValue
+from src.mcx_client_app import McxClientApp, McxClientAppConfiguration, ThreadSafeValue
 
 class ExampleMcxClientApp(McxClientApp):
     """
     Application that you can change to your needs.
     """
-    def __init__(self, options: McxClientAppOptions):
+    def __init__(self, options: McxClientAppConfiguration):
         super().__init__(options)
         
         # Initiate your variables here
@@ -44,7 +44,7 @@ class ExampleMcxClientApp(McxClientApp):
         pass
         
 if __name__ == "__main__":
-    client_options = McxClientAppOptions.from_json("config.json")
+    client_options = McxClientAppConfiguration.from_json("config.json")
 
     app = ExampleMcxClientApp(client_options)
     app.run()

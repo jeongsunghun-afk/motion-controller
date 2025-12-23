@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import logging
 import math
-from src.mcx_client_app import McxClientApp, McxClientAppOptions, StopSignal
+from src.mcx_client_app import McxClientApp, McxClientAppConfiguration, StopSignal
 from robot_control.motion_program import MotionProgram, Waypoint
 from robot_control.robot_command import RobotCommand
 from robot_control.system_defs import InterpreterStates
@@ -24,7 +24,7 @@ class RobotMotionApp(McxClientApp):
     """
     Application that moves the robot left and right.
     """
-    def __init__(self, options: McxClientAppOptions):
+    def __init__(self, options: McxClientAppConfiguration):
         super().__init__(options)
         # Initialize robot as None, will be set in startOp
         self.robot = None
@@ -99,7 +99,7 @@ class RobotMotionApp(McxClientApp):
 
 
 if __name__ == '__main__':
-    new_options = McxClientAppOptions(
+    new_options = McxClientAppConfiguration(
         login="",
         password="",
         target_url="",

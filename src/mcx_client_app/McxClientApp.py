@@ -17,7 +17,7 @@ import time
 import operator
 from typing import Optional, TypeVar, Generic
 import copy
-from .McxClientAppOptions import McxClientAppOptions
+from .McxClientAppConfiguration import McxClientAppOptions
 import traceback
 
 T = TypeVar('T')

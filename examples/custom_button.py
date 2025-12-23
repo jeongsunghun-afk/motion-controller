@@ -46,7 +46,7 @@ logging.basicConfig(level=logging.INFO)
 # Add parent directory to path to import mcx_client_app
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.mcx_client_app import McxClientApp, McxClientAppOptions, ThreadSafeValue, McxClientAppThread
+from src.mcx_client_app import McxClientApp, McxClientAppConfiguration, ThreadSafeValue, McxClientAppThread
 from motorcortex import Subscription
 
 class Button:
@@ -104,7 +104,7 @@ class CustomButtonApp(McxClientAppThread):
     """
     Application that counts and prints the counter value, resetting it when the custom button is pressed.
     """
-    def __init__(self, options: McxClientAppOptions):
+    def __init__(self, options: McxClientAppConfiguration):
         super().__init__(options)
         self.reset_button: Button = Button(
             param = 'root/UserParameters/GUI/PythonScript01/resetButton',
@@ -143,8 +143,8 @@ class CustomButtonApp(McxClientAppThread):
         self.wait(1)  # Wait 1 second between increments
 
 if __name__ == "__main__":
-    # client_options = McxClientAppOptions.from_json("config.json")
-    client_options = McxClientAppOptions(
+    # client_options = McxClientAppConfiguration.from_json("config.json")
+    client_options = McxClientAppConfiguration(
         login="",
         password="",
         target_url="wss://",
