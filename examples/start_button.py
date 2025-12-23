@@ -14,7 +14,7 @@ Add this to the end of the parameters.json file in the config/user folder of the
         "Name": "PythonScript01",
         "Children": [
         {
-            "Name": "StartStop",
+            "Name": "StartButton",
             "Type": "bool, input",
             "Value": 0
         }
@@ -64,10 +64,10 @@ class StartButtonApp(McxClientApp):
 
 if __name__ == '__main__':
     new_options = McxClientAppOptions(
-        login="admin",
-        password="vectioneer",
-        target_url="wss://192.168.2.100",
-        start_stop_param="root/UserParameters/GUI/PythonScript01/StartStop"
+        login="",
+        password="",
+        target_url="",
+        start_stop_param="root/UserParameters/GUI/PythonScript01/StartButton"
     )
 
     app = StartButtonApp(new_options)

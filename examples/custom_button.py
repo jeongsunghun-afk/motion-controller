@@ -19,6 +19,11 @@ Add this to the end of the parameters.json file in the config/user folder of the
               "Value": 0
             },
             {
+              "Name": "StartButton",
+              "Type": "bool, input",
+              "Value": 0
+            },
+            {
               "Name": "Counter",
               "Type": "int,input",
               "Value": 0
@@ -41,12 +46,29 @@ logging.basicConfig(level=logging.INFO)
 # Add parent directory to path to import mcx_client_app
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.mcx_client_app import McxClientApp, McxClientAppOptions, ThreadSafeValue
+from src.mcx_client_app import McxClientApp, McxClientAppOptions, ThreadSafeValue, McxClientAppThread
 from motorcortex import Subscription
 
-
 class Button:
+    """
+      Class to handle a button with rising and falling edge detection.
+      
+      Attributes:
+          param (str): The parameter path of the button.
+          subscription (Subscription): The subscription object for the button.
+          state (ThreadSafeValue[bool]): The current state of the button (pressed or not).
+          raising_edge_callback (callable): Callback function to call on rising edge (button press).
+          falling_edge_callback (callable): Callback function to call on falling edge (button release).
+    """
     def __init__(self, param: str, raising_edge_callback: callable = lambda: None, falling_edge_callback: callable = lambda: None):
+        """Initialize the Button with parameter path and callbacks.
+        
+        Args:
+            param (str): The parameter path of the button.
+            raising_edge_callback (callable): Callback function to call on rising edge (button press).
+            falling_edge_callback (callable): Callback function to call on falling edge (button release).
+        """
+        
         self.param: str = param
         self.subscription: Subscription = None
         self.state: ThreadSafeValue[bool] = ThreadSafeValue(False)
@@ -78,7 +100,7 @@ class Button:
         elif current_state and not self.__state_saved:
             self.__state_saved = True
 
-class CustomButtonApp(McxClientApp):
+class CustomButtonApp(McxClientAppThread):
     """
     Application that counts and prints the counter value, resetting it when the custom button is pressed.
     """
@@ -121,7 +143,13 @@ class CustomButtonApp(McxClientApp):
         self.wait(1)  # Wait 1 second between increments
 
 if __name__ == "__main__":
-    client_options = McxClientAppOptions.from_json("config.json")
+    # client_options = McxClientAppOptions.from_json("config.json")
+    client_options = McxClientAppOptions(
+        login="",
+        password="",
+        target_url="wss://",
+        start_stop_param="root/UserParameters/GUI/PythonScript01/StartButton"
+    )
 
     app = CustomButtonApp(client_options)
     app.run()

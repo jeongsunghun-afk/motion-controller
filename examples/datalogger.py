@@ -255,16 +255,20 @@ class dataLoggerClientApp(McxClientApp):
 if __name__ == "__main__":
     class DataLoggerOptions(McxClientAppOptions):
         def __init__(self, **args):
-            super().__init__(**args)
+            # it is important to set default values before calling super().__init__()
             self.paths_to_log: list[str] = []
             self.log_file: str = ""
             self.divider: int = 10
             self.save_interval: int = 5
             self.batch_size: int = 100
             
+            super().__init__(**args)
+            
     # Add current script directory to path so dataLogger_config.json can be found
     config_path = os.path.join(os.path.dirname(__file__), 'dataLogger_config.json')
     options = DataLoggerOptions.from_json(config_path)
+    
+    print("\nNOTE: Update the dataLogger_config.json file to set login, password, target_url, and parameters to log.\n\n")
             
     logging.info(f"McxClientAppOptions initialized: {options.as_dict()}")
     

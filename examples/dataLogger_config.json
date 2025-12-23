@@ -1,6 +1,7 @@
 {
-  "login": "admin",
-  "password": "vectioneer",
+  "login": "",
+  "password": "",
+  "target_url":"",
   "run_during_states": [
     "ENGAGED_S"
   ],
@@ -12,6 +13,5 @@
     "log_file": "data/robot_data.csv",
     "divider":10,
     "batch_size":100,
-    "save_interval":3,
-    "target_url":"wss://192.168.2.100"
+    "save_interval":3
 }

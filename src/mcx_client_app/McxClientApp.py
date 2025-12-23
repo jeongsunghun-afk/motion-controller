@@ -231,6 +231,45 @@ class McxClientApp:
         if self.running.get() != should_run:
             logging.debug(f"Running state changed to {should_run}")
             self.running.set(should_run)
+            
+    def _setupControlSubscription(self) -> None:
+        """Set up single subscription for control parameters (start/stop and/or state).
+
+        This prepares the start/stop parameter (if provided) and subscribes to the
+        relevant control parameters. On successful subscription the internal
+        running callback is registered.
+        """
+        control_params: list[str] = []
+        if self.options.start_stop_param:
+            try:
+                # Ensure the start/stop parameter is initialized to 0
+                self.req.setParameter(self.options.start_stop_param, 0).get()
+            except Exception as e:
+                tb = traceback.format_exc()
+                logging.error(f"Failed to initialize start/stop parameter '{self.options.start_stop_param}': {e}\n{tb}")
+                raise
+            control_params.append(self.options.start_stop_param)
+
+        if self.options.allowed_states:
+            control_params.append(self.options.state_param)
+
+        if control_params:
+            try:
+                self.__running_subscription = self.sub.subscribe(
+                    control_params,
+                    group_alias=f"{self.__id}_control",
+                    frq_divider=100
+                )
+                result = self.__running_subscription.get()
+                if result is not None and result.status == motorcortex.OK:
+                    logging.debug(f"Control parameters subscription successful: {control_params}")
+                    self.__running_subscription.notify(self._running_callback)
+                else:
+                    logging.error("Failed to subscribe to control parameters.")
+            except Exception as e:
+                tb = traceback.format_exc()
+                logging.error(f"Exception while subscribing to control parameters: {e}\nTraceback:\n{tb}")
+                raise
 
     def action(self) -> None:
         """
@@ -270,27 +309,8 @@ class McxClientApp:
         """
         self.connect()
         logging.debug("Connected to Motorcortex server.")
-        
-        # Set up single subscription for control parameters (start/stop and/or state)
-        control_params = []
-        if self.options.start_stop_param:
-            self.req.setParameter(self.options.start_stop_param, 0).get()
-            control_params.append(self.options.start_stop_param)
-        if self.options.allowed_states:
-            control_params.append(self.options.state_param)
-        
-        if control_params:
-            self.__running_subscription = self.sub.subscribe(
-                control_params, 
-                group_alias=f"{self.__id}_control", 
-                frq_divider=100
-            )
-            result = self.__running_subscription.get()
-            if result is not None and result.status == motorcortex.OK:
-                logging.debug(f"Control parameters subscription successful: {control_params}")
-                self.__running_subscription.notify(self._running_callback)
-            else:
-                logging.error("Failed to subscribe to control parameters.")
+
+        self._setupControlSubscription()
         
         self.startOp()
         
@@ -303,12 +323,12 @@ class McxClientApp:
             while True:
                 try:
                     
-                    logging.INFO("Waiting for start signal...")
+                    logging.info("Waiting for start signal...")
                     # Wait for running to become True
                     while not self.running.get():
                         time.sleep(0.1)
                     
-                    logging.INFO("Running user action...")
+                    logging.info("Running user action...")
                     # Run action method in the main thread
                     while self.running.get():
                         self.action()
@@ -397,26 +417,7 @@ class McxClientAppThread(McxClientApp):
         self.connect()
         logging.debug("Connected to Motorcortex server.")
         
-        # Set up single subscription for control parameters (start/stop and/or state)
-        control_params = []
-        if self.options.start_stop_param:
-            self.req.setParameter(self.options.start_stop_param, 0).get()
-            control_params.append(self.options.start_stop_param)
-        if self.options.allowed_states:
-            control_params.append(self.options.state_param)
-        
-        if control_params:
-            self._McxClientApp__running_subscription = self.sub.subscribe(
-                control_params, 
-                group_alias=f"{self._McxClientApp__id}_control", 
-                frq_divider=100
-            )
-            result = self._McxClientApp__running_subscription.get()
-            if result is not None and result.status == motorcortex.OK:
-                logging.debug(f"Control parameters subscription successful: {control_params}")
-                self._McxClientApp__running_subscription.notify(self._running_callback)
-            else:
-                logging.error("Failed to subscribe to control parameters.")
+        self._setupControlSubscription()
         
         self.startOp()
         
@@ -428,11 +429,13 @@ class McxClientAppThread(McxClientApp):
         try:
             while True:
                 try:
+                    
+                    logging.info("Waiting for start signal...")
                     # Wait for running to become True
                     while not self.running.get():
                         time.sleep(0.1)
                     
-                    logging.debug("Running user action in separate thread...")
+                    logging.info("Running user action in separate thread...")
                     
                     # Start action method in a separate thread
                     self._action_thread = threading.Thread(target=self._action_wrapper, daemon=True)
