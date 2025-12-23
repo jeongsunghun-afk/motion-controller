@@ -96,7 +96,8 @@ class McxClientApp:
         self.req: TypingOptional[motorcortex.Request] = None
         self.sub: TypingOptional[motorcortex.Subscription] = None
         self.__id = str(uuid.uuid4())
-        self.running: ThreadSafeValue = ThreadSafeValue(self.options.start_stop_param is None)
+        self.running: ThreadSafeValue = ThreadSafeValue(False)
+        self.__running_subscription: TypingOptional[motorcortex.Subscription] = None
         
     def connect(self) -> None:
         """
@@ -110,7 +111,7 @@ class McxClientApp:
                 self.motorcortex_types,
                 self.parameter_tree,
                 certificate=self.options.certificate,
-                timeout_ms=10000,
+                timeout_ms=3000,
                 login=self.options.login,
                 password=self.options.password,
                 reconnect=True
@@ -196,6 +197,40 @@ class McxClientApp:
         Reset the running flag to False.
         """
         self.running.set(False)
+    
+    def _running_callback(self, msg) -> None:
+        """
+        Callback for control parameter changes (start/stop and/or state).
+        (Happens in subscription thread.)
+        """
+        # Determine if we should be running
+        should_run = True
+        
+        # Parse message based on subscription layout
+        if self.options.start_stop_param and self.options.allowed_states:
+            # Both parameters subscribed: [start_stop, state]
+            start_stop_value = msg[0].value[0]
+            state_value = msg[1].value[0]
+            
+            should_run = (start_stop_value != 0)
+            allowed_values = [s.value for s in self.options.allowed_states]
+            should_run = should_run and (state_value in allowed_values)
+            
+        elif self.options.start_stop_param:
+            # Only start/stop parameter
+            start_stop_value = msg[0].value[0]
+            should_run = (start_stop_value != 0)
+            
+        elif self.options.allowed_states:
+            # Only state parameter
+            state_value = msg[0].value[0]
+            allowed_values = [s.value for s in self.options.allowed_states]
+            should_run = (state_value in allowed_values)
+        
+        # Update running state if changed
+        if self.running.get() != should_run:
+            logging.debug(f"Running state changed to {should_run}")
+            self.running.set(should_run)
 
     def action(self) -> None:
         """
@@ -235,58 +270,47 @@ class McxClientApp:
         """
         self.connect()
         logging.debug("Connected to Motorcortex server.")
-        self.startOp()
+        
+        # Set up single subscription for control parameters (start/stop and/or state)
+        control_params = []
         if self.options.start_stop_param:
             self.req.setParameter(self.options.start_stop_param, 0).get()
-            start_stop_subscription = self.sub.subscribe(self.options.start_stop_param, group_alias=self.__id, frq_divider=1000)
-            if (start_stop_subscription is not None and start_stop_subscription.get().status == motorcortex.OK):
-                logging.debug("StartStop parameter subscription successful.")
-            logging.debug("Subscribed to StartStop parameter notifications.")
-            start_stop_subscription.notify(self._start_stop_notify)
+            control_params.append(self.options.start_stop_param)
+        if self.options.allowed_states:
+            control_params.append(self.options.state_param)
+        
+        if control_params:
+            self.__running_subscription = self.sub.subscribe(
+                control_params, 
+                group_alias=f"{self.__id}_control", 
+                frq_divider=100
+            )
+            result = self.__running_subscription.get()
+            if result is not None and result.status == motorcortex.OK:
+                logging.debug(f"Control parameters subscription successful: {control_params}")
+                self.__running_subscription.notify(self._running_callback)
+            else:
+                logging.error("Failed to subscribe to control parameters.")
+        
+        self.startOp()
+        
+        # Initialize running state based on current conditions
+        if not self.options.start_stop_param and not self.options.allowed_states:
+            # No conditions to check, start immediately
+            self.running.set(True)
         
         try:
             while True:
                 try:
-                    # Wait for StartStop and/or allowed states before starting action
-                    need_start = bool(self.options.start_stop_param)
-                    need_states = bool(self.options.allowed_states)
-
-                    if need_start or need_states:
-                        allowed_states = [s.value for s in self.options.allowed_states] if need_states else None
-                        self.running.set(False)
-                        try:
-                            if need_start and need_states:
-                                logging.debug("Waiting for StartStop == True and system in allowed states...")
-                                # Wait for StartStop to become true
-                                self.wait_for(self.options.start_stop_param, 0, operat="!=", block_stop_signal=True, timeout=-1)
-                                # Then wait for system state to be one of the allowed states
-                                self.wait_for(self.options.state_param, allowed_states, operat="in", block_stop_signal=True, timeout=-1)
-                            elif need_start:
-                                logging.info("Waiting for StartStop == True...")
-                                self.wait_for(self.options.start_stop_param, 0, operat="!=", block_stop_signal=True, timeout=-1)
-                            else:
-                                logging.info("Waiting for system to be in allowed states...")
-                                self.wait_for(self.options.state_param, allowed_states, operat="in", block_stop_signal=True, timeout=-1)
-
-                            # Both conditions satisfied -> start action
-                            self.running.set(True)
-
-                        except StopSignal:
-                            logging.debug("Stop signal received while waiting. Returning to top-level loop.")
-                            self.running.set(False)
-                            continue
-                    logging.debug("Running user action...")
                     
+                    logging.INFO("Waiting for start signal...")
+                    # Wait for running to become True
+                    while not self.running.get():
+                        time.sleep(0.1)
+                    
+                    logging.INFO("Running user action...")
                     # Run action method in the main thread
                     while self.running.get():
-                        # Check if still in allowed states
-                        if self.options.allowed_states:
-                            current_state = self.req.getParameter(self.options.state_param).get().value[0]
-                            if current_state not in [s.value for s in self.options.allowed_states]:
-                                logging.warning("System no longer in allowed states. Stopping action.")
-                                self.running.set(False)
-                                break
-                            
                         self.action()
                     
                     logging.debug("Stop signal detected. Waiting for next start signal...")
@@ -334,19 +358,6 @@ class McxClientApp:
                     tb = traceback.format_exc()
                     logging.error(f"Error closing subscription: {e}\nTraceback:\n{tb}")
             logging.debug("Connection closed.")
-    
-    def _start_stop_notify(self, msg) -> None:
-        """
-        Notification callback for StartStop parameter changes. 
-        (Happens in a different thread.)
-        
-        Args:
-            msg: Message object containing the new value of the StartStop parameter.
-        """
-        value = msg[0].value[0]
-        if self.running.get() != (value != 0):
-            logging.debug(f"StartStop parameter changed to {value}. Updating running state.")
-            self.running.set(value != 0)
 
 
 class McxClientAppThread(McxClientApp):
@@ -385,49 +396,43 @@ class McxClientAppThread(McxClientApp):
         """
         self.connect()
         logging.debug("Connected to Motorcortex server.")
-        self.startOp()
+        
+        # Set up single subscription for control parameters (start/stop and/or state)
+        control_params = []
         if self.options.start_stop_param:
             self.req.setParameter(self.options.start_stop_param, 0).get()
-            start_stop_subscription = self.sub.subscribe(self.options.start_stop_param, group_alias=self._MCxClientApp__id, frq_divider=1000)
-            if (start_stop_subscription is not None and start_stop_subscription.get().status == motorcortex.OK):
-                logging.debug("StartStop parameter subscription successful.")
-            logging.debug("Subscribed to StartStop parameter notifications.")
-            start_stop_subscription.notify(self._start_stop_notify)
+            control_params.append(self.options.start_stop_param)
+        if self.options.allowed_states:
+            control_params.append(self.options.state_param)
+        
+        if control_params:
+            self._McxClientApp__running_subscription = self.sub.subscribe(
+                control_params, 
+                group_alias=f"{self._McxClientApp__id}_control", 
+                frq_divider=100
+            )
+            result = self._McxClientApp__running_subscription.get()
+            if result is not None and result.status == motorcortex.OK:
+                logging.debug(f"Control parameters subscription successful: {control_params}")
+                self._McxClientApp__running_subscription.notify(self._running_callback)
+            else:
+                logging.error("Failed to subscribe to control parameters.")
+        
+        self.startOp()
+        
+        # Initialize running state based on current conditions
+        if not self.options.start_stop_param and not self.options.allowed_states:
+            # No conditions to check, start immediately
+            self.running.set(True)
         
         try:
             while True:
                 try:
-                    # Wait for StartStop and/or allowed states before starting action
-                    need_start = bool(self.options.start_stop_param)
-                    need_states = bool(self.options.allowed_states)
-
-                    if need_start or need_states:
-                        allowed_states = [s.value for s in self.options.allowed_states] if need_states else None
-                        self.running.set(False)
-                        try:
-                            if need_start and need_states:
-                                logging.debug("Waiting for StartStop == True and system in allowed states...")
-                                # Wait for StartStop to become true
-                                self.wait_for(self.options.start_stop_param, 0, operat="!=", block_stop_signal=True, timeout=-1)
-                                # Then wait for system state to be one of the allowed states
-                                self.wait_for(self.options.state_param, allowed_states, operat="in", block_stop_signal=True, timeout=-1)
-                            elif need_start:
-                                logging.debug("Waiting for StartStop == True...")
-                                self.wait_for(self.options.start_stop_param, 0, operat="!=", block_stop_signal=True, timeout=-1)
-                            else:
-                                logging.debug("Waiting for system to be in allowed states...")
-                                self.wait_for(self.options.state_param, allowed_states, operat="in", block_stop_signal=True, timeout=-1)
-
-                            # Both conditions satisfied -> start action
-                            self.running.set(True)
-
-                        except StopSignal:
-                            logging.debug("Stop signal received while waiting. Returning to top-level loop.")
-                            self.running.set(False)
-                            continue
+                    # Wait for running to become True
+                    while not self.running.get():
+                        time.sleep(0.1)
                     
                     logging.debug("Running user action in separate thread...")
-                    print(f"running: {self.running.get()}")
                     
                     # Start action method in a separate thread
                     self._action_thread = threading.Thread(target=self._action_wrapper, daemon=True)
@@ -502,13 +507,6 @@ class McxClientAppThread(McxClientApp):
         """
         try:
             while self.running.get():
-                if self.options.allowed_states:
-                    # Ensure still in allowed states
-                    current_state = self.req.getParameter(self.options.state_param).get().value[0]
-                    if current_state not in [s.value for s in self.options.allowed_states]:
-                        logging.warning("System no longer in allowed states. Stopping action.")
-                        self.running.set(False)
-                        break
                 self.action()
         except StopSignal:
             logging.info("Action thread received stop signal.")
