@@ -17,7 +17,7 @@ import time
 import operator
 from typing import Optional, TypeVar, Generic
 import copy
-from .McxClientAppConfiguration import McxClientAppOptions
+from .McxClientAppConfiguration import McxClientAppConfiguration
 import traceback
 
 T = TypeVar('T')
@@ -81,15 +81,15 @@ class McxClientApp:
         - startOp(): Called after connection is established (optional)
         - onExit(): Called before disconnecting (optional)
     """
-    def __init__(self, options: TypingOptional[McxClientAppOptions] = None) -> None:
+    def __init__(self, options: TypingOptional[McxClientAppConfiguration] = None) -> None:
         """
         Initialize the MCxClientApp.
 
         Args:
-            options (McxClientAppOptions): Optional McxClientAppOptions dataclass with configuration.
+            options (McxClientAppConfiguration): Optional McxClientAppConfiguration dataclass with configuration.
         """
         if options is None:
-            options = McxClientAppOptions(login="", password="")
+            options = McxClientAppConfiguration(login="", password="")
         self.options = options
         self.parameter_tree: motorcortex.ParameterTree = motorcortex.ParameterTree()
         self.motorcortex_types: motorcortex.MessageTypes = motorcortex.MessageTypes()
@@ -392,12 +392,12 @@ class McxClientAppThread(McxClientApp):
         - startOp(): Called after connection is established (optional)
         - onExit(): Called before disconnecting (optional)
     """
-    def __init__(self, options: TypingOptional[McxClientAppOptions] = None) -> None:
+    def __init__(self, options: TypingOptional[McxClientAppConfiguration] = None) -> None:
         """
         Initialize the McxClientAppThread.
 
         Args:
-            options (McxClientAppOptions): Optional McxClientAppOptions dataclass with configuration.
+            options (McxClientAppConfiguration): Optional McxClientAppConfiguration dataclass with configuration.
         """
         super().__init__(options)
         self._action_thread: TypingOptional[threading.Thread] = None
@@ -524,7 +524,7 @@ if __name__ == '__main__':
         """
         Example application demonstrating threaded inheritance pattern.
         """
-        def __init__(self, options: McxClientAppOptions):
+        def __init__(self, options: McxClientAppConfiguration):
             super().__init__(options)
             # Add custom attributes here
             self.custom_counter = 0
@@ -554,8 +554,8 @@ if __name__ == '__main__':
             """
             logging.info(f"Exiting after {self.custom_counter} iterations.")
 
-    options = McxClientAppOptions.from_json('config.json')
+    options = McxClientAppConfiguration.from_json('config.json')
 
-    logging.info(f"McxClientAppOptions initialized: {options.as_dict()}")
+    logging.info(f"McxClientAppConfiguration initialized: {options.as_dict()}")
     app = ExampleApp(options)
     app.run()
