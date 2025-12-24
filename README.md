@@ -42,16 +42,13 @@ This file contains the connection settings and parameters for your application:
 
 ```json
 {
-    "target_url": "wss://localhost:5568:5567",
-    "cert": "/etc/ssl/certs/mcx.cert.pem",
+    "target_url": "wss://localhost",
+    "cert": "mcx.cert.pem",
     "login": "",
-    "password": "",
-    "state_cmd_param": "root/Logic/stateCommand",
-    "state_param": "root/Logic/state"
+    "password": ""
 }
 ```
 
-**Important:** Update these values before deploying to your target system.
 
 ### `service_config.json` - Build Configuration
 
