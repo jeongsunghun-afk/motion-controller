@@ -1,1 +1,1 @@
-motorcortex
+motorcortex-python
