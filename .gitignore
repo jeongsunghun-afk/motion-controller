@@ -113,13 +113,11 @@ dmypy.json
 # Pyre type checker
 .pyre/
 .mpy-workbench/
-.github/
 
 Test.py
 venv-req
 dependencies.*.tar.gz
 dependencies.*/
-stubs/
 data/
 config.json
 service_config.json
