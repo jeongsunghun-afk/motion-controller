@@ -23,14 +23,13 @@ RUN yum install -y \
 # Ensure pip, setuptools, wheel, Cython, and auditwheel are up-to-date
 RUN python3.10 -m pip install --upgrade pip setuptools wheel cython auditwheel
 
-# Copy makeDeb.sh and default_service_config.json into the image
-COPY makeDeb.sh /usr/local/bin/makeDeb.sh
-RUN chmod +x /usr/local/bin/makeDeb.sh
+# Copy makeDeb.py and default_service_config.json into the image
+COPY makeDeb.py /usr/local/bin/makeDeb.py
 COPY default_service_config.json /usr/local/bin/default_service_config.json
 COPY template.service.in /usr/local/bin/template.service.in
 
 # Set working directory for user mounts
 WORKDIR /workspace
 
-# Default entrypoint: run makeDeb.sh, so you can just pass the config as argument
-ENTRYPOINT ["makeDeb.sh"]
+# Default entrypoint: run makeDeb.py, so you can just pass the config as argument
+ENTRYPOINT ["python3", "/usr/local/bin/makeDeb.py"]
