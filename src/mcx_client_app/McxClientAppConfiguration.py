@@ -65,9 +65,9 @@ class McxClientAppConfiguration:
             setattr(self, key, value)
 
         config_path = os.environ.get("CONFIG_PATH", None)
-        self.__deployed = config_path is not None
-        logging.debug(f"Loading McxClientApp Options! [Deployed: {self.__deployed}]")
-        if self.__deployed and config_path:
+        logging.info(f"[init] Config Path: {config_path}")
+        logging.debug(f"Loading McxClientApp Options! [Deployed: {self.is_deployed}]")
+        if self.is_deployed and config_path:
             with open(config_path, 'r') as f:
                 data = json.load(f)
                 for key, value in data.items():
@@ -89,22 +89,28 @@ class McxClientAppConfiguration:
     @classmethod
     def from_json(cls, json_file: str) -> 'McxClientAppConfiguration':
         config_path = os.environ.get("CONFIG_PATH", None)
+        logging.info(f"[from_json] Config Path: {config_path}")
         if config_path is not None:
             return cls()
         else:
             with open(json_file, 'r') as f:
                 data = json.load(f)
             return cls(**data)
-
+        
+    @property
+    def is_deployed(self) -> bool:
+        return os.environ.get("CONFIG_PATH", None) is not None
+    
     @property
     def certificate(self) -> str:
-        if getattr(self, "__deployed", False):
+        logging.info(f"[Certificate] Deployed: {self.is_deployed}")
+        if self.is_deployed:
             return self.cert_deployed
         return self.cert
 
     @property
     def ip_address(self) -> str:
-        if getattr(self, "__deployed", False):
+        if self.is_deployed:
             return self.target_url_deployed
         return self.target_url
     
