@@ -89,7 +89,6 @@ class McxClientAppConfiguration:
     @classmethod
     def from_json(cls, json_file: str) -> 'McxClientAppConfiguration':
         config_path = os.environ.get("CONFIG_PATH", None)
-        logging.info(f"[from_json] Config Path: {config_path}")
         if config_path is not None:
             return cls()
         else:
@@ -103,7 +102,6 @@ class McxClientAppConfiguration:
     
     @property
     def certificate(self) -> str:
-        logging.info(f"[Certificate] Deployed: {self.is_deployed}")
         if self.is_deployed:
             return self.cert_deployed
         return self.cert
