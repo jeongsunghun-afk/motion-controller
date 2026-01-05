@@ -13,7 +13,7 @@ Then, from your project root, run:
 docker run --rm -v "$PWD:/workspace" -w /workspace mcx-2025-03-37-deb-builder service_config.json
 ```
 
-The container includes `makeDeb.sh`, `default_service_config.json`, and `template.service.in` by default. You only need to provide your own config file as an argument.
+The container includes `makeDeb.py`, `default_service_config.json`, and `template.service.in` by default. You only need to provide your config file as an argument.
 
 
 If you want to use a custom systemd service template, add the `SERVICE_TEMPLATE` option to your config file, e.g.:
@@ -53,7 +53,7 @@ The `service_config.json` file is a JSON configuration file that controls how th
 - `VENV_TARGET_DIR`: Target directory for the virtual environment (default: "/usr/local/.venv.{PACKAGE_NAME}").
 - `REQUIREMENTS_FILE`: Path to the requirements.txt file (default: "requirements.txt").
 - `SERVICE_TEMPLATE`: Path to the systemd service template file (default: "/usr/local/bin/template.service.in").
-- `CONFIG_PATH`: Path to the configuration file (default: "/etc/motorcortex/config/services/{PACKAGE_NAME}.json").
+- `CONFIG_PATH`: Path to the configuration file (default: "/etc/motorcortex/config/services/{PACKAGE_NAME}.json"). This is where the python script will look for its config.
 - `DEBUG_ON`: Enable debug output (default: false).
 
 
@@ -94,13 +94,13 @@ docker container prune -f && docker rmi $(docker images -a -q --filter 'dangling
 
 
 
-## Using makeDeb.sh Without Docker
+## Using makeDeb.py Without Docker
 
 
-You can also run `makeDeb.sh` directly on your host system (outside Docker):
+You can also run `makeDeb.py` directly on your host system (outside Docker):
 
 ```bash
-bash deploying/makeDeb.sh service_config.json
+python3 deploying/makeDeb.py service_config.json
 ```
 
 **Important:** When running locally, set the `SERVICE_TEMPLATE` option in your config to `deploying/template.service.in`:
