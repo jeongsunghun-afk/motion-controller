@@ -51,7 +51,7 @@ The `service_config.json` file is a JSON configuration file that controls how th
 - `BUILDFOLDER`: The build folder path (default: from default config).
 - `VENV_REQ_DIR`: Directory for virtual environment requirements (default: from default config).
 - `VENV_TARGET_DIR`: Target directory for the virtual environment (default: "/usr/local/.venv.{PACKAGE_NAME}").
-- `REQUIREMENTS_FILE`: Path to the requirements.txt file (default: "requirements.txt").
+- `REQUIREMENTS_FILE`: Path to the requirements.txt file (default: from default config).
 - `SERVICE_TEMPLATE`: Path to the systemd service template file (default: "/usr/local/bin/template.service.in").
 - `CONFIG_PATH`: Path to the configuration file (default: "/etc/motorcortex/config/services/{PACKAGE_NAME}.json"). This is where the python script will look for its config.
 - `DEBUG_ON`: Enable debug output (default: false).
