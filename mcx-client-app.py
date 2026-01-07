@@ -34,6 +34,7 @@ class ExampleMcxClientApp(McxClientApp):
         """
         Increment counter and check for reset button press.
         """
+        print("Client app is running...")
         self.wait(1)  # Wait 1 second between increments
         
     def onExit(self) -> None:
