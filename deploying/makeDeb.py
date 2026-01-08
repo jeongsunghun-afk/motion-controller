@@ -198,15 +198,16 @@ def setup_build_directory(config):
         debug_print(f"Removing existing build folder: {build_path}", config['debug_enabled'])
         try:
             if build_path.is_dir():
-                # Handle permission errors during removal
-                def _on_rm_error(func, path, _exc_info):
-                    try:
-                        os.chmod(path, 0o777)
-                        func(path)
-                    except Exception:
-                        pass
+                    # Handle permission errors during removal
+                    def _on_rm_error(func, path, exc_info):
+                        try:
+                            os.chmod(path, 0o777)
+                            func(path)
+                        except Exception:
+                            pass
 
-                shutil.rmtree(build_path, onexc=_on_rm_error)
+                    # Use the correct onerror keyword so errors are handled
+                    shutil.rmtree(build_path, onerror=_on_rm_error)
             else:
                 # If it's a file, unlink it
                 build_path.unlink()
@@ -309,10 +310,6 @@ systemctl disable {config['service']}
     # Service file
     service_template = get_config_value('SERVICE_TEMPLATE', config_file_path, str(script_dir / 'default_service_config.json'))
 
-    config_path = get_config_value('CONFIG_PATH', '', str(script_dir / 'default_service_config.json'))
-    if not config_path:
-        config_path = f'/etc/motorcortex/config/services/{config["package_name"]}.json'
-
     debug_print(f"Using service template: {service_template}", debug_enabled)
 
     service_file = systemd_dir / f"{config['service']}.service"
@@ -338,7 +335,7 @@ systemctl disable {config['service']}
         debug_print(f"Using service template file: {template_path}")
         service_content = template_path.read_text()
         service_content = service_content.replace('@EXEC_START@',
-            f'/bin/bash -c \'source {config["venv_target_dir"]}/bin/activate && CONFIG_PATH="{config_path}" python3 {config["venv_target_dir"]}/{config["python_script"]}; deactivate\'')
+            f'/bin/bash -c \'source {config["venv_target_dir"]}/bin/activate && DEPLOYED=True python3 {config["venv_target_dir"]}/{config["python_script"]}; deactivate\'')
         service_content = service_content.replace('@DESCRIPTION@', config['description'])
         service_file.write_text(service_content, encoding='utf-8', newline="\n")
     else:
@@ -452,13 +449,27 @@ def build_deb(package_dir: str, output_file: str, config: dict) -> bool:
 
     # Step 2: control.tar.gz
     with _tarfile.open(package_dir / "control.tar.gz", "w:gz", format=_tarfile.GNU_FORMAT) as tf:
-        for item in DEBIAN.iterdir():
-            tf.add(item, arcname=item.name, recursive=True)
+        if DEBIAN.exists():
+            for item in sorted(DEBIAN.rglob('*')):
+                try:
+                    rel = item.relative_to(DEBIAN)
+                except Exception:
+                    # Skip entries that are not under DEBIAN for safety
+                    continue
+                tf.add(item, arcname=str(rel), recursive=True)
 
     # Step 3: data.tar.gz
     with _tarfile.open(package_dir / "data.tar.gz", "w:gz", format=_tarfile.GNU_FORMAT) as tf:
-        for item in data_folder.iterdir():
-            tf.add(item, arcname=item.name, recursive=True)
+        # Add files preserving paths relative to the data folder (e.g. etc/... , usr/...)
+        # Use rglob to ensure we only include entries actually under data_folder and
+        # compute their relative paths safely.
+        if data_folder.exists():
+            for path in sorted(data_folder.rglob('*')):
+                try:
+                    rel = path.relative_to(data_folder)
+                except Exception:
+                    continue
+                tf.add(path, arcname=str(rel))
 
     # Step 4: combine using ar
     ar_archive = ArArchive(output_file, mode='w')

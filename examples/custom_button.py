@@ -25,7 +25,7 @@ Add this to the end of the parameters.json file in the config/user folder of the
             },
             {
               "Name": "Counter",
-              "Type": "int,input",
+              "Type": "int,parameter_volatile",
               "Value": 0
             }
           ]
@@ -145,9 +145,9 @@ class CustomButtonApp(McxClientAppThread):
 if __name__ == "__main__":
     # client_options = McxClientAppConfiguration.from_json("config.json")
     client_options = McxClientAppConfiguration(
-        login="",
-        password="",
-        target_url="wss://",
+        login="admin",
+        password="vectioneer",
+        target_url="wss://192.168.2.100",
         start_stop_param="root/UserParameters/GUI/PythonScript01/StartButton"
     )
 

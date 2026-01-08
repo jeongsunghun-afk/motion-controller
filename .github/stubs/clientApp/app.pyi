@@ -13,32 +13,64 @@ class StopSignal(Exception):
     Exception raised when a stop signal is received from the Motorcortex server.
     """
 
-@dataclass
-class McxClientAppOptions:
+class McxClientAppConfiguration:
     '''
     Configuration options for McxClientApp.
 
     Attributes:
         login (str): Username for authenticating with the Motorcortex server.
         password (str): Password for authenticating with the Motorcortex server.
-        target_url (str): WebSocket URL of the Motorcortex server (e.g., \'wss://localhost\').
+        target_url (str): Local Development WebSocket URL of the Motorcortex server (e.g., 'wss://localhost').
             This is the endpoint used to establish the connection.
-        cert (str): Path to the SSL certificate file for secure connection (e.g., \'mcx.cert.crt\').
-            Required for encrypted communication with the server. This is the fallback if "/etc/ssl/certs/mcx.cert.pem" is not found.
-        statecmd_param (str): Parameter path for sending state commands to the server (default: \'root/Logic/stateCommand\').
-            Used to control the robot or system state.
-        state_param (str): Parameter path for reading the current state from the server (default: \'root/Logic/state\').
-            Used to monitor the robot or system state.
+        target_url_deployed (str): Deployed WebSocket URL of the Motorcortex server (default: 'wss://localhost').
+        cert (str): Local Development path to the SSL certificate file for secure connection (e.g., 'mcx.cert.crt').
+        cert_deployed (str): Deployed path to the SSL certificate file (default: '/etc/ssl/certs/mcx.cert.pem').
+        statecmd_param (str): Parameter path for sending state commands to the server (default: 'root/Logic/stateCommand').
+        state_param (str): Parameter path for reading the current state from the server (default: 'root/Logic/state').
+        run_during_states (list[State]|None): List of allowed states during which iterate() can run (default None).
         start_stop_param (str|None): Optional parameter path for start/stop control (default: None).
-            If provided, the application will monitor this parameter to start or stop operations.
     '''
-    login: str
-    password: str
-    target_url: str = ...
-    cert: str = ...
-    statecmd_param: str = ...
-    state_param: str = ...
-    start_stop_param: str | None = ...
+    def __init__(
+        self,
+        login: str | None = None,
+        password: str | None = None,
+        target_url: str = "wss://localhost",
+        target_url_deployed: str = "wss://localhost",
+        cert: str = "mcx.cert.crt",
+        cert_deployed: str = "/etc/ssl/certs/mcx.cert.pem",
+        statecmd_param: str | None = "root/Logic/stateCommand",
+        state_param: str | None = "root/Logic/state",
+        run_during_states: list = None,
+        start_stop_param: str | None = None,
+        **kwargs
+    ) -> None: ...
+    
+    def set_config_paths(self, deployed_config: str | None, non_deployed_config: str | None) -> None:
+        """
+        Set the configuration file paths for deployed and non-deployed environments.
+        
+        Args:
+            deployed_config (str | None): Path to the configuration file used when deployed.
+            non_deployed_config (str | None): Path to the configuration file used when not deployed.
+        """
+    
+    @property
+    def has_config(self) -> bool: ...
+    
+    @property
+    def is_deployed(self) -> bool: ...
+    
+    @property
+    def certificate(self) -> str: ...
+    
+    @property
+    def ip_address(self) -> str: ...
+    
+    @property
+    def run_during_states(self) -> list: ...
+    
+    @property
+    def allowed_states(self) -> list: ...
 
 class ThreadSafeValue(Generic[T]):
     """
@@ -65,10 +97,10 @@ class McxClientApp:
     Base client application for interacting with a Motorcortex server.
     Provides methods to connect, engage, disengage, and run user-defined actions with state monitoring.
     
-    This base class does NOT use a separate thread for the action() method.
+    This base class does NOT use a separate thread for the iterate() method.
     
     To use this class, inherit from it and override the following methods:
-        - action(): Main action loop (called repeatedly while running)
+        - iterate(): Main iterate loop (called repeatedly while running)
         - startOp(): Called after connection is established (optional)
         - onExit(): Called before disconnecting (optional)
     """
@@ -78,12 +110,12 @@ class McxClientApp:
     req: motorcortex.Request | None
     sub: motorcortex.Subscription | None
     running: ThreadSafeValue
-    def __init__(self, options: McxClientAppOptions | None = None) -> None:
+    def __init__(self, options: McxClientAppConfiguration) -> None:
         """
         Initialize the MCxClientApp.
 
         Args:
-            options (McxClientAppOptions): Optional McxClientAppOptions dataclass with configuration.
+            options (McxClientAppConfiguration): McxClientAppConfiguration instance with configuration.
         """
     def connect(self) -> None:
         """
@@ -129,19 +161,9 @@ class McxClientApp:
         """
         Reset the running flag to False.
         """
-    def engage(self) -> None:
+    def iterate(self) -> None:
         """
-        Command the system to the ENGAGED state and wait until it is engaged.
-        Sends the command every 5 seconds until engaged or stopped.
-        """
-    def disengage(self) -> None:
-        """
-        Command the system to the OFF state and wait until it is off.
-        Sends the command every 5 seconds until off or stopped.
-        """
-    def action(self) -> None:
-        """
-        Main action loop called repeatedly while the system is running.
+        Main iterate loop called repeatedly while the system is running.
         Override this method in your subclass to implement custom behavior.
         
         In the base class, this method runs in the main thread.
@@ -149,7 +171,7 @@ class McxClientApp:
         """
     def startOp(self) -> None:
         """
-        Called after connection is established, before engaging the system.
+        Called after connection is established.
         Override this method to set parameters or perform initialization.
         """
     def onExit(self) -> None:
@@ -174,15 +196,15 @@ class McxClientAppThread(McxClientApp):
     """
     Threaded client application for interacting with a Motorcortex server.
     
-    This class extends MCxClientApp and runs the action() method in a separate thread,
+    This class extends MCxClientApp and runs the iterate() method in a separate thread,
     allowing the main thread to monitor start/stop signals independently.
     
     To use this class, inherit from it and override the following methods:
-        - action(): Main action loop (called repeatedly in a separate thread)
+        - iterate(): Main iterate loop (called repeatedly in a separate thread)
         - startOp(): Called after connection is established (optional)
         - onExit(): Called before disconnecting (optional)
     """
-    def __init__(self, options: McxClientAppOptions | None = None) -> None:
+    def __init__(self, options: McxClientAppConfiguration) -> None:
         """
         Initialize the McxClientAppThread.
 

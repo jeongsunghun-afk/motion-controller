@@ -44,7 +44,11 @@ class ExampleMcxClientApp(McxClientApp):
         pass
         
 if __name__ == "__main__":
-    client_options = McxClientAppConfiguration.from_json("config.json")
+    client_options = McxClientAppConfiguration()
+    client_options.set_config_paths(
+        deployed_config="/etc/motorcortex/config/services/mcx_client_app.json",
+        non_deployed_config="config.json"
+    )
 
     app = ExampleMcxClientApp(client_options)
     app.run()

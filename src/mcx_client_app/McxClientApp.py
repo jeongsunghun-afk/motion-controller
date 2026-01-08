@@ -81,16 +81,19 @@ class McxClientApp:
         - startOp(): Called after connection is established (optional)
         - onExit(): Called before disconnecting (optional)
     """
-    def __init__(self, options: TypingOptional[McxClientAppConfiguration] = None) -> None:
+    def __init__(self, options: McxClientAppConfiguration) -> None:
         """
         Initialize the MCxClientApp.
 
         Args:
             options (McxClientAppConfiguration): Optional McxClientAppConfiguration dataclass with configuration.
         """
-        if options is None:
-            options = McxClientAppConfiguration(login="", password="")
         self.options = options
+        if not self.options.has_config:
+            logging.warning("No json config has been set!  THIS WILL CAUSE ERRORS WHEN DEPLOYED. Use `set_config_paths()` of `McxClientAppConfiguration` to configure the code for deployment.")
+        if not self.options.is_deployed and self.options.deployed_config == None:
+            logging.warning("Deployed configuration path not set! THIS WILL CAUSE ERRORS WHEN DEPLOYED.")
+        
         self.parameter_tree: motorcortex.ParameterTree = motorcortex.ParameterTree()
         self.motorcortex_types: motorcortex.MessageTypes = motorcortex.MessageTypes()
         self.req: TypingOptional[motorcortex.Request] = None
@@ -554,7 +557,7 @@ if __name__ == '__main__':
             """
             logging.info(f"Exiting after {self.custom_counter} iterations.")
 
-    options = McxClientAppConfiguration.from_json('config.json')
+    options = McxClientAppConfiguration()
 
     logging.info(f"McxClientAppConfiguration initialized: {options.as_dict()}")
     app = ExampleApp(options)
