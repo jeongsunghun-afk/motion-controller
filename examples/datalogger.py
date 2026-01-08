@@ -3,30 +3,7 @@ For this example the basic Motorcortex Anthropomorphic Robot application is used
 You can download it from the Motorcortex Store. 
 Make sure to have the Motorcortex Anthropomorphic Robot application running and that you can connect to it using the DESK-Tool.
 
-This example demonstrates how to create a custom button in the GUI that resets a counter in the script.
-
-Add this to the end of the parameters.json file in the config/user folder of the Motorcortex Anthropomorphic Robot application:
-
-{
-      "Name": "GUI",
-      "Children": [
-        {
-          "Name": "PythonScript01",
-          "Children": [
-            {
-              "Name": "resetButton",
-              "Type": "bool, input",
-              "Value": 0
-            },
-            {
-              "Name": "Counter",
-              "Type": "int,input",
-              "Value": 0
-            }
-          ]
-        }
-      ]
-    }
+This example demonstrates how to create a data logger that logs parameter values to a CSV file in a thread-safe manner.
 """
 #
 #   Developer : Coen Smeets (Coen@vectioneer.com)
@@ -266,7 +243,11 @@ if __name__ == "__main__":
             
     # Add current script directory to path so dataLogger_config.json can be found
     config_path = os.path.join(os.path.dirname(__file__), 'dataLogger_config.json')
-    options = DataLoggerOptions.from_json(config_path)
+    options = DataLoggerOptions()
+    options.set_config_paths(
+        deployed_config="/etc/motorcortex/config/services/datalogger.json", #This is only needed when deployed on a Motorcortex controller. If only locally running, you can set it to None.
+        non_deployed_config=config_path
+    ) 
     
     print("\nNOTE: Update the dataLogger_config.json file to set login, password, target_url, and parameters to log.\n\n")
             

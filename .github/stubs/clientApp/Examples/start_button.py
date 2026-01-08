@@ -59,13 +59,15 @@ class StartButtonApp(McxClientApp):
 
 
 if __name__ == '__main__':
-    new_options = McxClientAppOptions(
-        login="",
-        password="",
-        target_url="",
-        start_stop_param="root/UserParameters/GUI/PythonScript01/StartStop"
+    new_options = McxClientAppOptions()
+    
+    # Update the config paths below to match your deployment requirements
+    # deployed_config: Path used when DEPLOYED env var is set (on production systems)
+    # non_deployed_config: Path used during local development
+    new_options.set_config_paths(
+        deployed_config="/etc/motorcortex/config/services/start_button_app.json",
+        non_deployed_config="config.json"
     )
-
     app = StartButtonApp(new_options)
     app.run()
 

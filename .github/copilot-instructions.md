@@ -97,7 +97,7 @@ Add this to the end of the parameters.json file in the config/user folder:
         },
         {
           "Name": "CycleCounter",
-          "Type": "int, input",
+          "Type": "int, parameter_volatile",
           "Value": 0
         },
         {
@@ -111,13 +111,34 @@ Add this to the end of the parameters.json file in the config/user folder:
 }
 
 SETUP: 1) Add JSON above to parameters.json, 2) Restart Motorcortex, 3) Verify in DESK tool
+
+CONFIG FILE DEPLOYMENT (NEEDED WHEN YOU DEPLOY THE APP AS A DEBIAN PACKAGE):
+To deploy the config.json file through the Motorcortex portal:
+1. In the portal, navigate to your .conf folder (Configuration Files section)
+2. Create a 'services' folder if it doesn't exist yet
+3. Create a file named 'robot_controller.json' (use lowercase with underscores)
+4. Paste your config.json content into this file:
+   {
+       "login": "admin",
+       "password": "your_password",
+       "target_url": "wss://localhost",
+       "cert": "mcx.cert.crt",
+       "run_during_states": [],
+       "custom_field_1": "value1",
+       "custom_field_2": 123
+   }
+5. In your code, configure the deployed config path:
+   config.set_config_paths(
+       deployed_config="/etc/motorcortex/config/services/robot_controller.json",
+       non_deployed_config="config.json"
+   )
 """
 
 import logging
 from src.mcx_client_app import McxClientApp
 ```
 
-**Note:** Replace `"services/RobotController"` with your actual client app name. This helps organize parameters in the tree under `root/UserParameters/services/RobotController/...`
+**Note:** Replace `"services/RobotController"` with your actual client app name for UserParameters organization, and use `"robot_controller.json"` (lowercase with underscores) as the config filename in the portal.
 
 ### Parameter Types Reference
 
@@ -129,14 +150,17 @@ Parameter types follow the format: `<type>[array_size], <access_level>`
 - **`input`**: Writable from client apps - client **writes**, Fitlet **reads** (buttons, commands, setpoints that control the Fitlet)
 - **`output`**: Read-only from client apps - Fitlet **writes**, client **reads** (sensor data, status values from Fitlet)
 - **`parameter`**: Configuration values (writable but typically set once during setup)
+- **`parameter_volatile`**: **RECOMMENDED for client app outputs** - Values that change frequently at runtime, written by client apps and read by other components
 
 **CRITICAL:** Access levels are from the **Fitlet's point of view**, not the client app:
-- If your client app **outputs a value** to the tree → use `input` (Fitlet receives input from client)
+- If your client app **outputs a value** to the tree → use `parameter_volatile` (optimized for frequent updates from client)
 - If your client app **reads a value** from the tree → use `output` (Fitlet outputs data to client)
+- For buttons/commands that control the Fitlet → use `input` (Fitlet receives input from client)
 
 **Client Apps Can Only Write To:**
 - ✅ `input` parameters - Client can call `self.req.setParameter()`
 - ✅ `parameter` parameters - Client can call `self.req.setParameter()`
+- ✅ `parameter_volatile` parameters - Client can call `self.req.setParameter()` (RECOMMENDED for client outputs)
 - ❌ `output` parameters - **CANNOT** write! These are read-only from client perspective
 
 **Common Mistake:**
@@ -145,9 +169,9 @@ Parameter types follow the format: `<type>[array_size], <access_level>`
 {"Name": "SafetyZone", "Type": "int, output", "Value": 0}
 self.req.setParameter("root/.../SafetyZone", zone).get()  # FAILS! Can't write to output
 
-# ✅ CORRECT: Client app output should be "input" type (input TO the Fitlet)
-{"Name": "SafetyZone", "Type": "int, input", "Value": 0}
-self.req.setParameter("root/.../SafetyZone", zone).get()  # Works!
+# ✅ CORRECT: Client app output should be "parameter_volatile" type (optimized for client writes)
+{"Name": "SafetyZone", "Type": "int, parameter_volatile", "Value": 0}
+self.req.setParameter("root/.../SafetyZone", zone).get()  # Works! Best performance
 ```
 
 **Array Syntax:** Add `[N]` for arrays (e.g., `double[5], input`)
@@ -157,13 +181,15 @@ self.req.setParameter("root/.../SafetyZone", zone).get()  # Works!
 - `int[3], input` → Client writes array: `[1, 2, 3]`
 - `double, output` → Fitlet writes, client reads: Sensor value `42.5`
 - `string, parameter` → Configuration: `"default_name"`
+- `int, parameter_volatile` → Client app output that updates frequently: Counter value `42`
 
 ### Best Practices
 
 ✅ **DO:** 
 - Document required parameters in file docstring
 - Use descriptive names, organize hierarchically under `UserParameters`
-- **Use `input` type for client app outputs** (data flowing FROM client TO Fitlet)
+- **Use `parameter_volatile` type for client app outputs** (data that changes frequently, written by client)
+- **Use `input` type for control commands** (buttons, commands that trigger actions on Fitlet)
 - **Use `output` type for Fitlet data** (data flowing FROM Fitlet TO client)
 - **Group related parameters as arrays** instead of separate entries:
   ```json
@@ -178,7 +204,8 @@ self.req.setParameter("root/.../SafetyZone", zone).get()  # Works!
 ❌ **DON'T:** 
 - Assume parameters exist, use generic names like `param1`
 - **Create custom parameters directly under `root/`** - ALL custom params MUST be under `root/UserParameters/`
-- Use `output` type for values your client app writes (use `input` instead)
+- Use `output` type for values your client app writes (use `parameter_volatile` instead)
+- Use `input` for frequently changing client outputs (use `parameter_volatile` for better performance)
 - Try to call `setParameter()` on `output` type parameters (will fail)
 
 ### Accessing Parameters in Code
@@ -286,7 +313,7 @@ of the Motorcortex Anthropomorphic Robot application:
         },
         {
           "Name": "CycleCounter",
-          "Type": "int, input",
+          "Type": "int, parameter_volatile",
           "Value": 0
         }
       ]
@@ -1265,7 +1292,14 @@ class CounterApp(McxClientApp):
         logging.info(f"Exiting. Final count: {self.counter}")
 
 if __name__ == "__main__":
-    config = McxClientAppConfiguration.from_json("config.json")
+    config = McxClientAppConfiguration()
+    # Update the config paths below to match your deployment requirements
+    # deployed_config: Path used when DEPLOYED env var is set (on production systems)
+    # non_deployed_config: Path used during local development
+    config.set_config_paths(
+        deployed_config="/etc/motorcortex/config/services/counter_app.json",
+        non_deployed_config="config.json"
+    )
     config.start_stop_param = "root/UserParameters/services/StartButton"
     app = CounterApp(config)
     app.run()
@@ -1331,7 +1365,14 @@ class TemperatureMonitor(McxClientApp):
         logging.info("Temperature monitor stopped")
 
 if __name__ == "__main__":
-    config = McxClientAppConfiguration.from_json("config.json")
+    config = McxClientAppConfiguration()
+    # Update the config paths below to match your deployment requirements
+    # deployed_config: Path used when DEPLOYED env var is set (on production systems)
+    # non_deployed_config: Path used during local development
+    config.set_config_paths(
+        deployed_config="/etc/motorcortex/config/services/temperature_monitor.json",
+        non_deployed_config="config.json"
+    )
     app = TemperatureMonitor(config)
     app.run()
 ```
@@ -1409,7 +1450,14 @@ class RobotPickPlace(McxClientApp):
             logging.info(f"Robot stopped after {self.cycle_count} cycles")
 
 if __name__ == "__main__":
-    config = McxClientAppConfiguration.from_json("config.json")
+    config = McxClientAppConfiguration()
+    # Update the config paths below to match your deployment requirements
+    # deployed_config: Path used when DEPLOYED env var is set (on production systems)
+    # non_deployed_config: Path used during local development
+    config.set_config_paths(
+        deployed_config="/etc/motorcortex/config/services/robot_pick_place.json",
+        non_deployed_config="config.json"
+    )
     config.run_during_states = [State.ENGAGED_S]  # Only run when engaged
     app = RobotPickPlace(config)
     app.run()
@@ -1509,6 +1557,13 @@ if __name__ == "__main__":
             "root/Sensors/Pressure",
             "root/Sensors/Humidity"
         ]
+    )
+    # Update the config paths below to match your deployment requirements
+    # deployed_config: Path used when DEPLOYED env var is set (on production systems)
+    # non_deployed_config: Path used during local development
+    config.set_config_paths(
+        deployed_config="/etc/motorcortex/config/services/data_logger.json",
+        non_deployed_config="config.json"
     )
     app = DataLogger(config)
     app.run()

@@ -2,8 +2,7 @@
 """
 makeDeb.py - Cross-platform Debian package builder for Motorcortex applications
 
-This script builds Debian packages from Python applications with multiple
-cross-platform backends: deb-pkg-tools (Python), nfpm (Go), or dpkg-deb (Linux).
+This script builds Debian packages (.deb) with pure Python implementations,
 """
 
 import json
@@ -15,13 +14,83 @@ import argparse
 import tempfile
 import re
 from pathlib import Path
+from pathlib import Path as _Path
+import tarfile as _tarfile
 
-# Try to import optional cross-platform package builder
-try:
-    from deb_pkg_tools.package import build_package
-    HAS_DEB_PKG_TOOLS = True
-except ImportError:
-    HAS_DEB_PKG_TOOLS = False
+
+class ArEntry:
+    def __init__(self, name: str, data: bytes, mtime: int = 0, uid: int = 0, gid: int = 0, mode: int = 0o100644):
+        self.name = name
+        self.data = data
+        self.mtime = mtime
+        self.uid = uid
+        self.gid = gid
+        self.mode = mode
+
+class ArArchive:
+    ARMAG = b"!<arch>\n"
+    
+    def __init__(self, path, mode='r'):
+        self.path = Path(path)
+        self.mode = mode
+        self.entries = []
+        if 'r' in mode:
+            self._read()
+
+    def _read(self):
+        with self.path.open('rb') as f:
+            magic = f.read(8)
+            if magic != self.ARMAG:
+                raise ValueError("Not a valid ar archive")
+            while True:
+                header = f.read(60)
+                if len(header) < 60:
+                    break
+                name = header[0:16].decode('utf-8').strip()
+                mtime = int(header[16:28].decode('utf-8').strip())
+                uid = int(header[28:34].decode('utf-8').strip())
+                gid = int(header[34:40].decode('utf-8').strip())
+                mode = int(header[40:48].decode('utf-8').strip(), 8)
+                size = int(header[48:58].decode('utf-8').strip())
+                end_chars = header[58:60]
+                if end_chars != b'`\n':
+                    raise ValueError("Invalid file header end characters")
+                data = f.read(size)
+                if size % 2 != 0:
+                    f.read(1)  # padding
+                self.entries.append(ArEntry(name, data, mtime, uid, gid, mode))
+
+    def list(self):
+        return [e.name for e in self.entries]
+
+    def read(self, name):
+        for e in self.entries:
+            if e.name.strip() == name:
+                return e.data
+        raise KeyError(f"No such entry: {name}")
+
+    def add(self, entry: ArEntry):
+        if 'w' not in self.mode:
+            raise ValueError("Archive not opened in write mode")
+        self.entries.append(entry)
+
+    def write(self, path=None):
+        path = self.path if path is None else Path(path)
+        with path.open('wb') as f:
+            f.write(self.ARMAG)
+            for e in self.entries:
+                # prepare header
+                name_field = e.name.encode('utf-8')[:16].ljust(16)
+                mtime_field = str(e.mtime).encode('utf-8').ljust(12)
+                uid_field = str(e.uid).encode('utf-8').ljust(6)
+                gid_field = str(e.gid).encode('utf-8').ljust(6)
+                mode_field = oct(e.mode)[2:].encode('utf-8').ljust(8)
+                size_field = str(len(e.data)).encode('utf-8').ljust(10)
+                header = name_field + mtime_field + uid_field + gid_field + mode_field + size_field + b'`\n'
+                f.write(header)
+                f.write(e.data)
+                if len(e.data) % 2 != 0:
+                    f.write(b'\n')  # padding
 
 
 def debug_print(message, debug_enabled=False):
@@ -110,7 +179,7 @@ def load_package_config(config_file, default_config, python_cmd):
         'build_folder': get_config_value('BUILDFOLDER', config_file, default_config) or 'build',
         'venv_req_dir': get_config_value('VENV_REQ_DIR', config_file, default_config) or 'wheels',
         'venv_target_dir': get_config_value('VENV_TARGET_DIR', config_file, default_config) or f'/usr/local/.venv.{package_name}',
-        'requirements_file': get_config_value('REQUIREMENTS_FILE', config_file, default_config) or 'requirements.txt',
+        'requirements_file': get_config_value('REQUIREMENTS_FILE', config_file, default_config) or None,
         'debug_enabled': debug_enabled
     }
 
@@ -122,7 +191,6 @@ def load_package_config(config_file, default_config, python_cmd):
 
     return config
 
-
 def setup_build_directory(config):
     """Create the package build directory structure."""
     build_path = Path(config['build_folder'])
@@ -130,15 +198,16 @@ def setup_build_directory(config):
         debug_print(f"Removing existing build folder: {build_path}", config['debug_enabled'])
         try:
             if build_path.is_dir():
-                # Handle permission errors during removal
-                def _on_rm_error(func, path, exc_info):
-                    try:
-                        os.chmod(path, 0o777)
-                        func(path)
-                    except Exception:
-                        pass
+                    # Handle permission errors during removal
+                    def _on_rm_error(func, path, exc_info):
+                        try:
+                            os.chmod(path, 0o777)
+                            func(path)
+                        except Exception:
+                            pass
 
-                shutil.rmtree(build_path, onerror=_on_rm_error)
+                    # Use the correct onerror keyword so errors are handled
+                    shutil.rmtree(build_path, onerror=_on_rm_error)
             else:
                 # If it's a file, unlink it
                 build_path.unlink()
@@ -149,9 +218,9 @@ def setup_build_directory(config):
 
     # Create main package directory
     package_dir = build_path / f"{config['package_name']}_{config['version']}"
-    debian_dir = package_dir / "DEBIAN"
-    systemd_dir = package_dir / "etc" / "systemd" / "system"
-    venv_dir = package_dir / config['venv_target_dir'].lstrip('/')
+    debian_dir = package_dir  / "DEBIAN"
+    systemd_dir = package_dir / "data" / "etc" / "systemd" / "system"
+    venv_dir = package_dir / "data" / config['venv_target_dir'].lstrip('/')
 
     # Create all directories
     for dir_path in [debian_dir, systemd_dir, venv_dir]:
@@ -176,7 +245,7 @@ Description: {config['description']}
         # Ensure debian directory exists and is writable
         debian_dir.mkdir(parents=True, exist_ok=True)
         control_path = debian_dir / "control"
-        control_path.write_text(control_content, encoding='utf-8')
+        control_path.write_text(control_content, encoding='utf-8', newline="\n")
         control_path.chmod(0o644)
     except Exception as e:
         debug_print(f"Failed to write control file {debian_dir / 'control'}: {e}", debug_enabled)
@@ -187,7 +256,7 @@ Description: {config['description']}
     preinst_content = f"{determine_python_command('')} -m venv --clear --system-site-packages {config['venv_target_dir']}\n"
     try:
         preinst_file = debian_dir / "preinst"
-        preinst_file.write_text(preinst_content, encoding='utf-8')
+        preinst_file.write_text(preinst_content, encoding='utf-8', newline="\n")
         preinst_file.chmod(0o755)
     except Exception as e:
         debug_print(f"Failed to write preinst script: {e}", debug_enabled)
@@ -208,7 +277,7 @@ systemctl start {config['service']}
 """
     try:
         postinst_file = debian_dir / "postinst"
-        postinst_file.write_text(postinst_content, encoding='utf-8')
+        postinst_file.write_text(postinst_content, encoding='utf-8', newline="\n")
         postinst_file.chmod(0o755)
     except Exception as e:
         debug_print(f"Failed to write postinst script: {e}", debug_enabled)
@@ -222,7 +291,7 @@ systemctl disable {config['service']}
 """
     try:
         prerm_file = debian_dir / "prerm"
-        prerm_file.write_text(prerm_content, encoding='utf-8')
+        prerm_file.write_text(prerm_content, encoding='utf-8', newline="\n")
         prerm_file.chmod(0o755)
     except Exception as e:
         debug_print(f"Failed to write prerm script: {e}", debug_enabled)
@@ -232,7 +301,7 @@ systemctl disable {config['service']}
     debug_print("Creating postrm script", debug_enabled)
     try:
         postrm_path = debian_dir / "postrm"
-        postrm_path.write_text("", encoding='utf-8')
+        postrm_path.write_text("", encoding='utf-8', newline="\n")
         postrm_path.chmod(0o755)
     except Exception as e:
         debug_print(f"Failed to write postrm script: {e}", debug_enabled)
@@ -240,10 +309,6 @@ systemctl disable {config['service']}
 
     # Service file
     service_template = get_config_value('SERVICE_TEMPLATE', config_file_path, str(script_dir / 'default_service_config.json'))
-
-    config_path = get_config_value('CONFIG_PATH', '', str(script_dir / 'default_service_config.json'))
-    if not config_path:
-        config_path = f'/etc/motorcortex/config/services/{config["package_name"]}.json'
 
     debug_print(f"Using service template: {service_template}", debug_enabled)
 
@@ -270,9 +335,9 @@ systemctl disable {config['service']}
         debug_print(f"Using service template file: {template_path}")
         service_content = template_path.read_text()
         service_content = service_content.replace('@EXEC_START@',
-            f'/bin/bash -c \'source {config["venv_target_dir"]}/bin/activate && CONFIG_PATH="{config_path}" python3 {config["venv_target_dir"]}/{config["python_script"]}; deactivate\'')
+            f'/bin/bash -c \'source {config["venv_target_dir"]}/bin/activate && DEPLOYED=True python3 {config["venv_target_dir"]}/{config["python_script"]}; deactivate\'')
         service_content = service_content.replace('@DESCRIPTION@', config['description'])
-        service_file.write_text(service_content)
+        service_file.write_text(service_content, encoding='utf-8', newline="\n")
     else:
         print(f"Error: Service template {template_path} not found", file=sys.stderr)
         sys.exit(1)
@@ -280,6 +345,9 @@ systemctl disable {config['service']}
 
 def build_python_wheels(config, python_cmd):
     """Build Python wheels from requirements file."""
+    if config['requirements_file'] is None:
+        return
+    
     req_file = Path(config['requirements_file'])
     if not req_file.exists():
         return
@@ -353,89 +421,88 @@ def copy_application_files(config, venv_dir):
             shutil.copytree(str(module_path), str(venv_dir / module_path.name), dirs_exist_ok=True)
         else:
             debug_print(f"Module/directory {module} not found, skipping", debug_enabled)
-
-
-def build_package_with_deb_pkg_tools(package_dir, output_file, debug_enabled):
-    """Build package using deb-pkg-tools."""
-    debug_print("Using deb-pkg-tools for package building", debug_enabled)
+            
+def create_debian_binary(package_dir:str, debug_enabled:bool=False) -> bool:
+    """Create a text file indicating Debian binary format."""
+    debug_print("Creating debian-binary file", debug_enabled)
     try:
-        build_package(str(package_dir), str(output_file), compression='xz')
+        debian_binary_path = package_dir / "debian-binary"
+        debian_binary_path.write_text("2.0\n", encoding='utf-8', newline="\n")
+        debian_binary_path.chmod(0o644)
         return True
     except Exception as e:
-        debug_print(f"deb-pkg-tools failed: {e}", debug_enabled)
+        debug_print(f"Failed to create debian-binary file: {e}", debug_enabled)
+        return False
+    
+def build_deb(package_dir: str, output_file: str, config: dict) -> bool:
+    package_dir = Path(package_dir)
+    DEBIAN = package_dir / "DEBIAN"
+    data_folder = package_dir / "data"
+
+    if not DEBIAN.exists() or not data_folder.exists():
+        print("DEBIAN or data folder missing")
         return False
 
+    # Step 1: debian-binary
+    debian_binary = package_dir / "debian-binary"
+    debian_binary.write_text("2.0\n", newline="\n")
 
-def build_package_with_nfpm(package_dir, output_file, config, debug_enabled):
-    """Build package using nfpm."""
-    build_path = Path(output_file).parent
-    package_path = Path(package_dir)
+    # Step 2: control.tar.gz
+    with _tarfile.open(package_dir / "control.tar.gz", "w:gz", format=_tarfile.GNU_FORMAT) as tf:
+        if DEBIAN.exists():
+            for item in sorted(DEBIAN.rglob('*')):
+                try:
+                    rel = item.relative_to(DEBIAN)
+                except Exception:
+                    # Skip entries that are not under DEBIAN for safety
+                    continue
+                tf.add(item, arcname=str(rel), recursive=True)
 
-    # Create nfpm config
-    nfpm_config = build_path / f"{config['package_name']}_{config['version']}.yaml"
-    nfpm_config_content = f"""name: "{config['package_name']}"
-version: "{config['version']}"
-arch: "{config['architecture']}"
-platform: "linux"
-maintainer: "{config['maintainer']}"
-description: "{config['description']}"
-contents:
-"""
+    # Step 3: data.tar.gz
+    with _tarfile.open(package_dir / "data.tar.gz", "w:gz", format=_tarfile.GNU_FORMAT) as tf:
+        # Add files preserving paths relative to the data folder (e.g. etc/... , usr/...)
+        # Use rglob to ensure we only include entries actually under data_folder and
+        # compute their relative paths safely.
+        if data_folder.exists():
+            for path in sorted(data_folder.rglob('*')):
+                try:
+                    rel = path.relative_to(data_folder)
+                except Exception:
+                    continue
+                tf.add(path, arcname=str(rel))
 
-    # Add all files with absolute paths
-    for root, dirs, files in os.walk(package_dir):
-        for file in files:
-            abs_src_path = Path(root) / file
-            rel_dst_path = abs_src_path.relative_to(package_path)
-            nfpm_config_content += f"""- src: "{abs_src_path}"
-  dst: "/{rel_dst_path}"
-"""
+    # Step 4: combine using ar
+    ar_archive = ArArchive(output_file, mode='w')
+    for filename in ["debian-binary", "control.tar.gz", "data.tar.gz"]:
+        file_path = package_dir / filename
+        with file_path.open('rb') as f:
+            data = f.read()
+        ar_archive.add(ArEntry(filename, data))
+    ar_archive.write(output_file)
 
-    nfpm_config.write_text(nfpm_config_content)
-
-    return run_command(['nfpm', 'package', '--config', str(nfpm_config), '--packager', 'deb', '--target', str(output_file)],
-                      cwd=build_path, debug_enabled=debug_enabled)
-
-
-def build_package_with_dpkg_deb(package_dir, output_file, debug_enabled):
-    """Build package using dpkg-deb."""
-    debug_print("Using dpkg-deb for package building", debug_enabled)
-
-    if run_command(['dpkg-deb', '-Zxz', '--build', str(package_dir)], cwd=Path.cwd(), debug_enabled=debug_enabled):
-        # dpkg-deb creates file as directory.deb, rename it
-        created_file = Path(str(package_dir) + '.deb')
-        if created_file.exists():
-            created_file.rename(output_file)
-        return True
-    return False
+    # # Optional cleanup
+    # for f in ["debian-binary", "control.tar.gz", "data.tar.gz"]:
+    #     (package_dir / f).unlink()
+    
+    print(f"Created Debian package: {output_file}")
+    return True
+        
 
 
 def build_debian_package(package_dir, config):
     """Build the final Debian package using the best available tool."""
     debug_enabled = config['debug_enabled']
     debug_print("Building Debian package", debug_enabled)
-
-    output_file = Path(config['build_folder']) / f"{config['package_name']}_{config['version']}_{config['architecture']}.deb"
-
-    # Try deb-pkg-tools first (most cross-platform)
-    if HAS_DEB_PKG_TOOLS:
-        if build_package_with_deb_pkg_tools(package_dir, output_file, debug_enabled):
-            print(f"Debian package created: {output_file.name}")
-            return
-
     # Fallback to nfpm
     output_file_simple = Path(config['build_folder']) / f"{config['package_name']}_{config['version']}.deb"
-    if build_package_with_nfpm(package_dir, output_file_simple, config, debug_enabled):
+    
+    # Create debian-binary file
+    create_debian_binary(package_dir, config['debug_enabled'])
+    
+    if build_deb(package_dir, output_file_simple, config):
         print(f"Debian package created: {output_file_simple.name}")
-        return
-
-    # Final fallback to dpkg-deb
-    if build_package_with_dpkg_deb(package_dir, output_file_simple, debug_enabled):
-        print(f"Debian package created: {output_file_simple.name}")
-        return
-
-    print("Error: All package building methods failed", file=sys.stderr)
-    sys.exit(1)
+    else:
+        print("Failed to build Debian package", file=sys.stderr)
 
 
 def set_build_permissions(build_path, debug_enabled):

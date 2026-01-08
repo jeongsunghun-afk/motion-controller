@@ -60,21 +60,14 @@ class McxClientAppConfiguration:
         self.state_param = state_param
         self._run_during_states = State.list_from(run_during_states)
         self.start_stop_param = start_stop_param
+        
+        self.deployed_config: str|None = None
+        self.non_deployed_config: str|None = None
 
         for key, value in kwargs.items():
             setattr(self, key, value)
-
-        config_path = os.environ.get("CONFIG_PATH", None)
-        logging.info(f"[init] Config Path: {config_path}")
-        logging.debug(f"Loading McxClientApp Options! [Deployed: {self.is_deployed}]")
-        if self.is_deployed and config_path:
-            with open(config_path, 'r') as f:
-                data = json.load(f)
-                for key, value in data.items():
-                    if key == "run_during_states":
-                        self._run_during_states = State.list_from(value)
-                    elif hasattr(self, key):
-                        setattr(self, key, value)
+            
+        self.__has_config = False
 
     def as_dict(self) -> dict:
         result = dict(self.__dict__)
@@ -85,20 +78,67 @@ class McxClientAppConfiguration:
 
     def __str__(self) -> str:
         return str(self.as_dict())
-
-    @classmethod
-    def from_json(cls, json_file: str) -> 'McxClientAppConfiguration':
-        config_path = os.environ.get("CONFIG_PATH", None)
-        if config_path is not None:
-            return cls()
-        else:
-            with open(json_file, 'r') as f:
+        
+    def set_config_paths(self, deployed_config: str | None, non_deployed_config: str | None) -> None:
+        """
+        Set the configuration file paths for deployed and non-deployed environments.
+        
+        It is recommended to use for the deployed configuration a path like: `/etc/motorcortex/config/services/mcx_client_app.json`
+        This means it will be in line with other motorcortex services and can be managed centrally from the portal. The folder to which Motorcortex portal will deploy config to is `/etc/motorcortex/config/`. Thus using a subfolder `services/` is a good practice to streamline the deployment on Motorcortex controllers.
+        
+        Args:
+            deployed_config (str | None): Path to the configuration file used when deployed. (CANNOT be None when deployed)
+            non_deployed_config (str | None): Path to the configuration file used when not deployed.
+        """
+        self.deployed_config = deployed_config
+        self.non_deployed_config = non_deployed_config
+        
+        if (self.is_deployed):
+            assert self.deployed_config is not None, "[ERROR] Deployed configuration not set!"
+            assert os.path.exists(self.deployed_config), f"[ERROR] Deployed configuration file not found: {self.deployed_config}"
+            with open(self.deployed_config, 'r') as f:
                 data = json.load(f)
-            return cls(**data)
+                for key, value in data.items():
+                    if key == "run_during_states":
+                        self._run_during_states = State.list_from(value)
+                    elif hasattr(self, key):
+                        setattr(self, key, value)
+        else:
+            if self.non_deployed_config is None:
+                logging.warning("Non-deployed configuration path not set; skipping loading non-deployed config.")
+                return
+            assert os.path.exists(self.non_deployed_config), f"[ERROR] Non-deployed configuration file not found: {self.non_deployed_config}"
+            with open(self.non_deployed_config, 'r') as f:
+                data = json.load(f)
+                for key, value in data.items():
+                    if key == "run_during_states":
+                        self._run_during_states = State.list_from(value)
+                    elif hasattr(self, key):
+                        setattr(self, key, value)
+                        
+        self.__has_config = True
+        logging.info(f"Configuration loaded from {'deployed' if self.is_deployed else 'non-deployed'} config file: {self.deployed_config if self.is_deployed else self.non_deployed_config}")
+        logging.debug(f"Configuration loaded: {self}")
+                        
+    @property
+    def has_config(self) -> bool:
+        """Check if configuration has been set.
+
+        Returns:
+            bool: True if configuration has been set, False otherwise.
+        """
+        return self.__has_config
         
     @property
     def is_deployed(self) -> bool:
-        return os.environ.get("CONFIG_PATH", None) is not None
+        """Check if the application is running in a deployed environment.
+        
+        Looks for the 'DEPLOYED' environment variable.
+        
+        Returns:
+            bool: True if deployed, False otherwise.
+        """
+        return os.environ.get("DEPLOYED", False) is not False
     
     @property
     def certificate(self) -> str:
