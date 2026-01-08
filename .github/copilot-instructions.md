@@ -111,13 +111,34 @@ Add this to the end of the parameters.json file in the config/user folder:
 }
 
 SETUP: 1) Add JSON above to parameters.json, 2) Restart Motorcortex, 3) Verify in DESK tool
+
+CONFIG FILE DEPLOYMENT (NEEDED WHEN YOU DEPLOY THE APP AS A DEBIAN PACKAGE):
+To deploy the config.json file through the Motorcortex portal:
+1. In the portal, navigate to your .conf folder (Configuration Files section)
+2. Create a 'services' folder if it doesn't exist yet
+3. Create a file named 'robot_controller.json' (use lowercase with underscores)
+4. Paste your config.json content into this file:
+   {
+       "login": "admin",
+       "password": "your_password",
+       "target_url": "wss://localhost",
+       "cert": "mcx.cert.crt",
+       "run_during_states": [],
+       "custom_field_1": "value1",
+       "custom_field_2": 123
+   }
+5. In your code, configure the deployed config path:
+   config.set_config_paths(
+       deployed_config="/etc/motorcortex/config/services/robot_controller.json",
+       non_deployed_config="config.json"
+   )
 """
 
 import logging
 from src.mcx_client_app import McxClientApp
 ```
 
-**Note:** Replace `"services/RobotController"` with your actual client app name. This helps organize parameters in the tree under `root/UserParameters/services/RobotController/...`
+**Note:** Replace `"services/RobotController"` with your actual client app name for UserParameters organization, and use `"robot_controller.json"` (lowercase with underscores) as the config filename in the portal.
 
 ### Parameter Types Reference
 
