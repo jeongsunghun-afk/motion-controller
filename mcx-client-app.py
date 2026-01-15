@@ -47,7 +47,7 @@ class ExampleMcxClientApp(McxClientApp):
 if __name__ == "__main__":
     client_options = McxClientAppConfiguration()
     client_options.set_config_paths(
-        deployed_config="/etc/motorcortex/config/services/mcx_client_app.json",
+        deployed_config="/etc/motorcortex/config/services/mcx_client_app.json",  #This is only needed when deployed on a Motorcortex controller. If only locally running, you can set it to None.
         non_deployed_config="config.json"
     )
 

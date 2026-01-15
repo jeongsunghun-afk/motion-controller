@@ -24,7 +24,7 @@ This document provides comprehensive servicesdance for AI agents to create, modi
 
 ## How Client Apps Interact with Motorcortex
 
-MCX-Client-Apps connect to a **Motorcortex server on a Fitlet** via WebSocket (e.g., `wss://192.168.1.100`) and interact with the **parameter tree** - a hierarchical structure with existing Motorcortex parameters (like `root/AGVControl/actualVelocityLocal`, `root/Sensors/Temperature`) and user-defined parameters under `root/UserParameters/` (like `root/UserParameters/services/StartButton`).
+MCX-Client-Apps connect to a **Motorcortex server on a Target** via WebSocket (e.g., `wss://192.168.1.100`) and interact with the **parameter tree** - a hierarchical structure with existing Motorcortex parameters (like `root/AGVControl/actualVelocityLocal`, `root/Sensors/Temperature`) and user-defined parameters under `root/UserParameters/` (like `root/UserParameters/services/StartButton`).
 
 **Operations:** Read with `self.req.getParameter()`, write with `self.req.setParameter()`, subscribe for real-time updates with `self.sub.subscribe()`.
 
@@ -34,7 +34,7 @@ MCX-Client-Apps connect to a **Motorcortex server on a Fitlet** via WebSocket (e
 
 **IMPORTANT:** Only add parameters for **client-app-specific** controls (buttons, counters, settings). If a parameter path is provided like `root/AGVControl/actualVelocityLocal` or `root/Sensors/Temperature`, these **already exist** in the Motorcortex application's parameter tree - just read/subscribe to them directly. Do NOT document them as "required parameters".
 
-When your app needs **new UserParameters** that don't exist on the Fitlet, **document them at the top of your file** so users know what to add to `parameters.json` in the Motorcortex application's `config/user` folder. These parameters are **always** placed under `root/UserParameters/...` in the tree.
+When your app needs **new UserParameters** that don't exist on the Target, **document them at the top of your file** so users know what to add to `parameters.json` in the Motorcortex application's `config/user` folder. These parameters are **always** placed under `root/UserParameters/...` in the tree.
 
 ### UserParameters vs McxClientAppConfiguration
 
@@ -146,16 +146,16 @@ Parameter types follow the format: `<type>[array_size], <access_level>`
 
 **Base Types:** `bool`, `int`, `float`, `double`, `string`
 
-**Access Levels (from Fitlet's perspective):**
-- **`input`**: Writable from client apps - client **writes**, Fitlet **reads** (buttons, commands, setpoints that control the Fitlet)
-- **`output`**: Read-only from client apps - Fitlet **writes**, client **reads** (sensor data, status values from Fitlet)
+**Access Levels (from Target's perspective):**
+- **`input`**: Writable from client apps - client **writes**, Target **reads** (buttons, commands, setpoints that control the Target)
+- **`output`**: Read-only from client apps - Target **writes**, client **reads** (sensor data, status values from Target)
 - **`parameter`**: Configuration values (writable but typically set once during setup)
 - **`parameter_volatile`**: **RECOMMENDED for client app outputs** - Values that change frequently at runtime, written by client apps and read by other components
 
-**CRITICAL:** Access levels are from the **Fitlet's point of view**, not the client app:
+**CRITICAL:** Access levels are from the **Target's point of view**, not the client app:
 - If your client app **outputs a value** to the tree → use `parameter_volatile` (optimized for frequent updates from client)
-- If your client app **reads a value** from the tree → use `output` (Fitlet outputs data to client)
-- For buttons/commands that control the Fitlet → use `input` (Fitlet receives input from client)
+- If your client app **reads a value** from the tree → use `output` (Target outputs data to client)
+- For buttons/commands that control the Target → use `input` (Target receives input from client)
 
 **Client Apps Can Only Write To:**
 - ✅ `input` parameters - Client can call `self.req.setParameter()`
@@ -177,9 +177,9 @@ self.req.setParameter("root/.../SafetyZone", zone).get()  # Works! Best performa
 **Array Syntax:** Add `[N]` for arrays (e.g., `double[5], input`)
 
 **Examples:**
-- `bool, input` → Client writes, Fitlet reads: Button press `0` or `1`
+- `bool, input` → Client writes, Target reads: Button press `0` or `1`
 - `int[3], input` → Client writes array: `[1, 2, 3]`
-- `double, output` → Fitlet writes, client reads: Sensor value `42.5`
+- `double, output` → Target writes, client reads: Sensor value `42.5`
 - `string, parameter` → Configuration: `"default_name"`
 - `int, parameter_volatile` → Client app output that updates frequently: Counter value `42`
 
@@ -189,8 +189,8 @@ self.req.setParameter("root/.../SafetyZone", zone).get()  # Works! Best performa
 - Document required parameters in file docstring
 - Use descriptive names, organize hierarchically under `UserParameters`
 - **Use `parameter_volatile` type for client app outputs** (data that changes frequently, written by client)
-- **Use `input` type for control commands** (buttons, commands that trigger actions on Fitlet)
-- **Use `output` type for Fitlet data** (data flowing FROM Fitlet TO client)
+- **Use `input` type for control commands** (buttons, commands that trigger actions on Target)
+- **Use `output` type for Target data** (data flowing FROM Target TO client)
 - **Group related parameters as arrays** instead of separate entries:
   ```json
   // ❌ BAD: Multiple separate threshold parameters

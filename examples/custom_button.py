@@ -143,7 +143,6 @@ class CustomButtonApp(McxClientAppThread):
         self.wait(1)  # Wait 1 second between increments
 
 if __name__ == "__main__":
-    # client_options = McxClientAppConfiguration.from_json("config.json")
     client_options = McxClientAppConfiguration(
         login="admin",
         password="vectioneer",
