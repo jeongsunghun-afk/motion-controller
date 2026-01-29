@@ -1,0 +1,20 @@
+{
+  "Version": "1.0.0",
+  "Services": [
+        {
+        "Name": "mcx-client-app",
+        "Enabled": true,
+        "Parameters": {
+            "Version": "1.0",
+            "Children": []
+        },
+        "Watchdog": {
+            "Enabled": true
+        },
+        "Config": {
+            "login": "admin",
+            "password": "vectioneer"
+        }
+        }
+    ]
+}

@@ -3,6 +3,44 @@ import os
 import json
 from .state_def import State
 
+
+def load_config_json(path: str, name: str) -> dict:
+    """
+    Load and validate configuration JSON from `path`.
+
+    Args:
+        path (str): Path to the configuration JSON file.
+        name (str): Name of the service to extract configuration for.
+
+    Returns:
+        dict: Configuration dictionary for the specified service.
+    """
+    assert path is not None, "Configuration path must be provided"
+    if not os.path.exists(path):
+        raise AssertionError(f"[ERROR] Configuration file not found: {path}")
+
+    with open(path, 'r') as f:
+        data = json.load(f)
+
+    services_data = data.get("Services", [])
+    if services_data is None or type(services_data) is not list or len(services_data) == 0:
+        raise ValueError(f"[ERROR] No service data found in deployed configuration file: {path}")
+
+    matched = None
+    for service in services_data:
+        if service.get("Name", "") == name:
+            matched = service
+            break
+    else:
+        raise ValueError(f"[ERROR] No service with name '{name}' found in deployed configuration file: {path}")
+
+    config_data = matched.get("Config", {}) if matched is not None else {}
+
+    if not isinstance(config_data, dict):
+        raise ValueError(f"[ERROR] Invalid configuration format in {path}; expected object/dict.")
+
+    return config_data
+
 class McxClientAppConfiguration:
     """
     Configuration options for McxClientApp.
@@ -67,8 +105,8 @@ class McxClientAppConfiguration:
         self.start_stop_param = start_stop_param
         self.enable_watchdog = enable_watchdog
         
-        self.deployed_config: str|None = None
-        self.non_deployed_config: str|None = None
+        self.deployed_config: str = "/etc/motorcortex/config/services/services_config.json"
+        self.non_deployed_config: str | None = None
 
         for key, value in kwargs.items():
             setattr(self, key, value)
@@ -84,8 +122,32 @@ class McxClientAppConfiguration:
 
     def __str__(self) -> str:
         return str(self.as_dict())
+    
+    def load_config(self) -> None:
+        """
+        Load configuration from the set config paths.
         
-    def set_config_paths(self, deployed_config: str | None, non_deployed_config: str | None) -> None:
+        Raises:
+            AssertionError: If configuration file is not found.
+            ValueError: If configuration format is invalid.
+        """
+        if self.is_deployed:
+            config_file = self.deployed_config
+        else: 
+            config_file = self.non_deployed_config
+        
+        config_data = load_config_json(config_file, name=self.name)
+        for key, value in config_data.items():
+            if key == "run_during_states":
+                self._run_during_states = State.list_from(value)
+            elif hasattr(self, key):
+                setattr(self, key, value)
+                        
+        self.__has_config = True
+        logging.info(f"Configuration loaded from {'deployed' if self.is_deployed else 'non-deployed'} config file: {config_file}")
+        logging.debug(f"Configuration loaded: {self}")
+        
+    def set_config_paths(self, deployed_config: str | None = None, non_deployed_config: str | None = None) -> None:
         """
         Set the configuration file paths for deployed and non-deployed environments.
         
@@ -96,35 +158,10 @@ class McxClientAppConfiguration:
             deployed_config (str | None): Path to the configuration file used when deployed. (CANNOT be None when deployed)
             non_deployed_config (str | None): Path to the configuration file used when not deployed.
         """
-        self.deployed_config = deployed_config
-        self.non_deployed_config = non_deployed_config
-        
-        if (self.is_deployed):
-            assert self.deployed_config is not None, "[ERROR] Deployed configuration not set!"
-            assert os.path.exists(self.deployed_config), f"[ERROR] Deployed configuration file not found: {self.deployed_config}"
-            with open(self.deployed_config, 'r') as f:
-                data = json.load(f)
-                for key, value in data.items():
-                    if key == "run_during_states":
-                        self._run_during_states = State.list_from(value)
-                    elif hasattr(self, key):
-                        setattr(self, key, value)
-        else:
-            if self.non_deployed_config is None:
-                logging.warning("Non-deployed configuration path not set; skipping loading non-deployed config.")
-                return
-            assert os.path.exists(self.non_deployed_config), f"[ERROR] Non-deployed configuration file not found: {self.non_deployed_config}"
-            with open(self.non_deployed_config, 'r') as f:
-                data = json.load(f)
-                for key, value in data.items():
-                    if key == "run_during_states":
-                        self._run_during_states = State.list_from(value)
-                    elif hasattr(self, key):
-                        setattr(self, key, value)
-                        
-        self.__has_config = True
-        logging.info(f"Configuration loaded from {'deployed' if self.is_deployed else 'non-deployed'} config file: {self.deployed_config if self.is_deployed else self.non_deployed_config}")
-        logging.debug(f"Configuration loaded: {self}")
+        if deployed_config is not None:
+            self.deployed_config = deployed_config
+        if non_deployed_config is not None:
+            self.non_deployed_config = non_deployed_config
                         
     @property
     def has_config(self) -> bool:

@@ -119,7 +119,7 @@ venv-req
 dependencies.*.tar.gz
 dependencies.*/
 data/
-config.json
-service_config.json
+services_config.json
+deploy_config.json
 
 *.tar
