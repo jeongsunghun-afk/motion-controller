@@ -2,4 +2,5 @@
 from .McxClientApp import McxClientApp, McxClientAppThread, StopSignal, ThreadSafeValue
 from .McxClientAppConfiguration import McxClientAppConfiguration
 from .state_def import StateCommand, State
+from .McxWatchdog import McxWatchdog
 

@@ -18,6 +18,7 @@ import operator
 from typing import Optional, TypeVar, Generic
 import copy
 from .McxClientAppConfiguration import McxClientAppConfiguration
+from .McxWatchdog import McxWatchdog
 import traceback
 
 T = TypeVar('T')
@@ -101,6 +102,11 @@ class McxClientApp:
         self.__id = str(uuid.uuid4())
         self.running: ThreadSafeValue = ThreadSafeValue(False)
         self.__running_subscription: TypingOptional[motorcortex.Subscription] = None
+
+        self.watchdog: McxWatchdog = McxWatchdog(
+            watchdog_folder_path=f"{self.options.get_parameter_path}/watchdog", 
+            enabled = self.options.enable_watchdog)
+    
         
     def connect(self) -> None:
         """
@@ -123,6 +129,8 @@ class McxClientApp:
             tb = traceback.format_exc()
             logging.error(f"Failed to connect to {self.options.ip_address}. Exiting. Error: {e}\nTraceback:\n{tb}")
             raise
+
+        self.watchdog.set_request(self.req)
 
     def wait_for(
         self,
@@ -298,6 +306,20 @@ class McxClientApp:
         """
         pass
 
+    def preIterate(self) -> None:
+        """
+        Called before each iterate() call.
+        Override this method to perform actions before each iteration.
+        """
+        self.watchdog.setDisable(False)
+
+    def postIterate(self) -> None:
+        """
+        Called after each iterate() call.
+        Override this method to perform actions after each iteration.
+        """
+        self.watchdog.setDisable(True)
+
     def run(self) -> None:
         """
         Run the client application: connect, engage, run iterate, disengage, disconnect.
@@ -333,8 +355,12 @@ class McxClientApp:
                     
                     logging.info("Running user iterate...")
                     # Run iterate method in the main thread
+
+                    self.preIterate()
                     while self.running.get():
                         self.iterate()
+                        self.watchdog.iterate()
+                    self.postIterate()
                     
                     logging.debug("Stop signal detected. Waiting for next start signal...")
                     # Continue loop to wait for next start signal
@@ -439,6 +465,7 @@ class McxClientAppThread(McxClientApp):
                         time.sleep(0.1)
                     
                     logging.info("Running user iterate in separate thread...")
+                    self.preIterate()
                     
                     # Start iterate method in a separate thread
                     self._action_thread = threading.Thread(target=self._action_wrapper, daemon=True)
@@ -446,7 +473,7 @@ class McxClientAppThread(McxClientApp):
                     
                     # Main thread monitors the running state
                     while self.running.get():
-                        time.sleep(0.1)  # Check running state periodically
+                        self.watchdog.iterate()
                     
                     # Stop signal received, stop the iterate thread
                     logging.debug("Stop signal detected in main thread.")
@@ -456,6 +483,8 @@ class McxClientAppThread(McxClientApp):
                         if self._action_thread.is_alive():
                             logging.warning("Iterate thread did not stop gracefully within timeout.")
                     
+
+                    self.postIterate()
                     logging.debug("Iterate thread stopped. Waiting for next start signal...")
                     # Continue loop to wait for next start signal
                     

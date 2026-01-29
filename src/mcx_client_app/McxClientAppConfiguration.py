@@ -8,6 +8,7 @@ class McxClientAppConfiguration:
     Configuration options for McxClientApp.
 
     Attributes:
+        name (str): Name of the client application.
         login (str): Username for authenticating with the Motorcortex server.
         password (str): Password for authenticating with the Motorcortex server.
         target_url (str): Local Development WebSocket URL of the Motorcortex server (e.g., 'wss://localhost').
@@ -27,6 +28,7 @@ class McxClientAppConfiguration:
             If empty or None, the iterate() method can run in any state.
         start_stop_param (str|None): Optional parameter path for start/stop control (default: None).
             If provided, the application will monitor this parameter to start or stop operations.
+        enable_watchdog (bool): Whether to enable the watchdog functionality (default: True).
     
     Note:
         When inheriting from this class, ensure to call super().__init__(**kwargs) after initialising the class parameters. For example,
@@ -38,6 +40,7 @@ class McxClientAppConfiguration:
     """
     def __init__(
         self,
+        name: str,
         login: str | None = None,
         password: str | None = None,
         target_url: str = "wss://localhost",
@@ -48,8 +51,10 @@ class McxClientAppConfiguration:
         state_param: str | None = "root/Logic/state",
         run_during_states: list = None,
         start_stop_param: str | None = None,
+        enable_watchdog: bool = True,
         **kwargs
     ) -> None:
+        self.name = name
         self.login = login
         self.password = password
         self.target_url = target_url
@@ -60,6 +65,7 @@ class McxClientAppConfiguration:
         self.state_param = state_param
         self._run_during_states = State.list_from(run_during_states)
         self.start_stop_param = start_stop_param
+        self.enable_watchdog = enable_watchdog
         
         self.deployed_config: str|None = None
         self.non_deployed_config: str|None = None
@@ -163,3 +169,8 @@ class McxClientAppConfiguration:
     @property
     def allowed_states(self) -> list:
         return self._run_during_states
+    
+    @property
+    def get_parameter_path(self)-> str:
+        """Get the parameter path root for the service"""
+        return f"root/Services/{self.name}"
