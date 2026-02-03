@@ -15,6 +15,25 @@ A Motorcortex Service Module (generated in Motorcortex when you specify it in `s
 
 When `autoStart` is set to `False`, the application will wait until the `isEnabled` parameter becomes `True` before starting its main loop.
 Thus, you can control when the application starts and stops by toggling the `disable` parameter via the Motorcortex DESK-Tool or other with a switch in the GRID.
+
+In service_config.json, the start button is enabled with the following snippet:
+```json
+{
+    "Name": "StartButtonExample",
+    "Enabled": true,
+    "Config": {
+    "login": "admin",
+    "password": "vectioneer",
+    "target_url": "wss://192.168.2.100",
+    "autoStart": false
+    },
+    "Watchdog": {
+    "Enabled": true,
+    "Disabled": true,
+    "high": 1000000,
+    "tooHigh": 5000000
+    }
+}
 """
 #
 #   Developer : Coen Smeets (Coen@vectioneer.com)

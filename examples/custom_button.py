@@ -5,17 +5,38 @@ Make sure to have the Motorcortex Anthropomorphic Robot application running and 
 
 This example shows how to create a custom button in the Motorcortex GUI that resets a counter when pressed.
 
-In `services_config.json`, two user Parameters have been added: 
+In `services_config.json`, the Custom Button is defined:
 ```json
 {
-  "Name": "resetButton",
-  "Type": "bool, input",
-  "Value": 0
-},
-{
-  "Name": "Counter",
-  "Type": "int,parameter_volatile",
-  "Value": 0
+    "Name": "CustomButtonExample",
+    "Enabled": true,
+    "Parameters": {
+    "Version": "1.0",
+    "Children": [
+        {
+        "Name": "resetButton",
+        "Type": "bool, input",
+        "Value": 0
+        },
+        {
+        "Name": "Counter",
+        "Type": "int,parameter_volatile",
+        "Value": 0
+        }
+    ]
+    },
+    "Config": {
+    "login": "admin",
+    "password": "vectioneer",
+    "target_url": "wss://192.168.2.100",
+    "autoStart": true
+    },
+    "Watchdog": {
+    "Enabled": true,
+    "Disabled": true,
+    "high": 2000000,
+    "tooHigh": 5000000
+    }
 }
 ```
 

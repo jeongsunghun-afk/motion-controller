@@ -161,6 +161,7 @@ class McxClientApp:
         timeout: float = 30,
         testinterval: float = 0.2,
         operat: str = "==",
+        keep_watchdog: bool = True,
         block_stop_signal: bool = False
     ) -> bool:
         """
@@ -173,6 +174,7 @@ class McxClientApp:
             timeout (float): Timeout in seconds. -1 or 0 for infinite.
             testinterval (float): Polling interval in seconds.
             operat (str): Comparison operator as string (==, !=, <, <=, >, >=, in).
+            keep_watchdog (bool): If True, keep watchdog alive while waiting.
             block_stop_signal (bool): If True, ignore stop signal.
 
         Returns:
@@ -188,6 +190,12 @@ class McxClientApp:
             if not self.running.get() and not block_stop_signal:
                 logging.warning("STOP")
                 raise StopSignal("Received stop signal")
+            # Keep the watchdog alive while waiting unless explicitly disabled
+            if keep_watchdog and getattr(self, "watchdog", None) is not None:
+                try:
+                    self.watchdog.iterate()
+                except Exception:
+                    logging.debug("Watchdog iterate raised an exception, continuing")
             time.sleep(testinterval)
             if (time.time() > to) and (timeout > 0):
                 logging.warning("Timeout")
@@ -198,6 +206,7 @@ class McxClientApp:
         self,
         timeout: float = 30,
         testinterval: float = 0.2,
+        keep_watchdog: bool = True,
         block_stop_signal: bool = False
     ) -> bool:
         """
@@ -207,6 +216,7 @@ class McxClientApp:
             timeout (float): Timeout in seconds. -1 or 0 for infinite.
             testinterval (float): Polling interval in seconds.
             block_stop_signal (bool): If True, ignore stop signal.
+            keep_watchdog (bool): If True, keep watchdog alive while waiting.
 
         Returns:
             bool: True if waited full timeout, False if timeout occurred.
@@ -219,6 +229,12 @@ class McxClientApp:
             if not self.running.get() and not block_stop_signal:
                 logging.warning("STOP")
                 raise StopSignal("Received stop signal")
+            # Keep the watchdog alive while waiting unless explicitly disabled
+            if keep_watchdog and getattr(self, "watchdog", None) is not None:
+                try:
+                    self.watchdog.iterate()
+                except Exception:
+                    logging.debug("Watchdog iterate raised an exception, continuing")
             time.sleep(testinterval)
             if (time.time() > to) and (timeout > 0):
                 return False
@@ -240,8 +256,16 @@ class McxClientApp:
 
         isEnabled: bool = bool(result.get(f"{self.options.get_parameter_path}/isEnabled", [0])[0])
 
+        # Extract the scalar current state value safely (subscription returns a list/tuple)
+        current_state = None
+        state_val = result.get(self.options.state_param, None)
+        if isinstance(state_val, (list, tuple)) and len(state_val) > 0:
+            current_state = state_val[0]
+        else:
+            current_state = state_val
+
         allowed_values = [s.value for s in self.options.allowed_states]
-        isAllowedState: bool = result.get(self.options.state_param, None) in allowed_values if self.options.allowed_states else True
+        isAllowedState: bool = (current_state in allowed_values) if self.options.allowed_states else True
 
         should_run = isEnabled and isAllowedState
 
@@ -376,7 +400,7 @@ class McxClientApp:
 
                     # Wait for running to become True
                     while not self.running.get():
-                        time.sleep(0.1)
+                        self.wait(0.1, block_stop_signal=True)
                     
                     logging.info("Running user iterate...")
                     # Run iterate method in the main thread
@@ -414,6 +438,7 @@ class McxClientApp:
             self.running.set(False)
             
             try:
+                self.postIterate()
                 self.onExit()
             except Exception as e:
                 tb = traceback.format_exc()
@@ -554,6 +579,8 @@ class McxClientAppThread(McxClientApp):
             
             if self.req:
                 try:
+                    self.watchdog.setDisable(True)
+                    logging.info("Disabling watchdog...")   
                     self.req.close()
                 except Exception as e:
                     tb = traceback.format_exc()

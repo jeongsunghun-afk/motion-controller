@@ -241,19 +241,14 @@ if __name__ == "__main__":
             
             super().__init__(**args)
             
-    # Add current script directory to path so dataLogger_config.json can be found
-    config_path = os.path.join(os.path.dirname(__file__), 'dataLogger_config.json')
-    options = DataLoggerOptions()
-    options.set_config_paths(
-        deployed_config="/etc/motorcortex/config/services/datalogger.json", #This is only needed when deployed on a Motorcortex controller. If only locally running, you can set it to None.
-        non_deployed_config=config_path
-    ) 
-    
-    print("\nNOTE: Update the dataLogger_config.json file to set login, password, target_url, and parameters to log.\n\n")
-            
-    logging.info(f"McxClientAppConfiguration initialized: {options.as_dict()}")
+    client_options = DataLoggerOptions(name="DataLoggerExample")
+    client_options.set_config_paths(
+            deployed_config="/etc/motorcortex/config/services/services_config.json",  # This is only needed when deployed on a Motorcortex controller. If only locally running, you can set it to None.
+            non_deployed_config="examples/services_config.json"
+        )
+    client_options.load_config()
     
     app = dataLoggerClientApp(
-        options=options
+        options=client_options
     )
     app.run()

@@ -124,3 +124,4 @@ deploy_config.json
 
 *.tar
 !examples/services_config.json
+.vscode/.motorcortex.json

@@ -23,28 +23,66 @@
         "login": "admin",
         "password": "vectioneer",
         "target_url": "wss://192.168.2.100",
-        "autoStart": true
+        "startButton": true
       },
       "Watchdog": {
         "Enabled": true,
         "Disabled": true,
-        "high": 2000000,
+        "high": 1000000,
         "tooHigh": 5000000
       }
     },
     {
       "Name": "StartButtonExample",
       "Enabled": true,
-      "Parameters": {
-        "Version": "1.0",
-        "Children": [
-        ]
-      },
       "Config": {
         "login": "admin",
         "password": "vectioneer",
         "target_url": "wss://192.168.2.100",
-        "autoStart": false
+        "startButton": true
+      },
+      "Watchdog": {
+        "Enabled": true,
+        "Disabled": true,
+        "high": 1000000,
+        "tooHigh": 5000000
+      }
+    },
+    {
+      "Name": "RobotAppExample",
+      "Enabled": true,
+      "Config": {
+        "login": "admin",
+        "password": "vectioneer",
+        "target_url": "wss://192.168.2.100",
+        "autoStart": true
+      },
+      "Watchdog": {
+        "Enabled": true,
+        "Disabled": true,
+        "high": 1000000,
+        "tooHigh": 5000000
+      }
+    },
+    {
+      "Name": "DataLoggerExample",
+      "Enabled": true,
+      "Config": {
+        "login": "admin",
+        "password": "vectioneer",
+        "target_url":"wss://192.168.2.100",
+        "run_during_states": [
+          "ENGAGED_S"
+        ],
+        "auto_engage": false,
+        "paths_to_log": [
+              "root/ManipulatorControl/jointPositionsTarget",
+              "root/ManipulatorControl/jointPositionsActual"
+          ],
+          "log_file": "data/robot_data.csv",
+          "divider":10,
+          "batch_size":100,
+          "save_interval":3
       },
       "Watchdog": {
         "Enabled": true,
