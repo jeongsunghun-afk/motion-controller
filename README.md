@@ -214,6 +214,19 @@ Add your own Python dependencies by editing `requirements.txt` and rebuilding th
 - **Protocol Bridges** - Connect Motorcortex to MQTT, OPC-UA, ROS, or other middlewares
 - **Custom Automation** - Implement application-specific behavior and workflows
 
+## Versioning
+
+The template exposes a Pythonic package version. You can access it from code:
+
+```python
+from src import mcx_client_app
+print(mcx_client_app.__version__)      # e.g. "0.1.0"
+# or
+print(mcx_client_app.get_version())    # returns the version string
+```
+
+The canonical version string is stored in `src/mcx_client_app/_version.py` and the package exposes it at `src/mcx_client_app/__version__`.
+
 ## Troubleshooting
 
 ### Connection Issues
