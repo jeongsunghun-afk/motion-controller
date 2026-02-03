@@ -20,7 +20,7 @@ This template provides a ready-to-use structure for creating Python client appli
 mcx-client-app-template/
 ├── mcx-client-app.py          # Main application template
 ├── config.json                # Runtime configuration
-├── service_config.json        # Build configuration
+├── package_config.json        # Build configuration
 ├── examples/                  # Example applications
 │   ├── robot_app.py          # Robot motion example
 │   ├── start_button.py       # Start/stop button example
@@ -42,25 +42,24 @@ This file contains the connection settings and parameters for your application:
 
 ```json
 {
-    "target_url": "wss://localhost",
-    "cert": "mcx.cert.pem",
-    "login": "",
-    "password": ""
+  "target_url": "wss://localhost",
+  "cert": "mcx.cert.pem",
+  "login": "",
+  "password": ""
 }
 ```
 
-
-### `service_config.json` - Build Configuration
+### `package_config.json` - Build Configuration
 
 This file controls how your Debian package is built:
 
 ```json
 {
-    "PACKAGE_NAME": "mcx-client-app-test",
-    "PYTHON_SCRIPT": "mcx-client-app.py",
-    "PYTHON_MODULES": "src",
-    "VERSION": "1.0",
-    "DESCRIPTION": "My custom Motorcortex client application"
+  "PACKAGE_NAME": "mcx-client-app-test",
+  "PYTHON_SCRIPT": "mcx-client-app.py",
+  "PYTHON_MODULES": "src",
+  "VERSION": "1.0",
+  "DESCRIPTION": "My custom Motorcortex client application"
 }
 ```
 
@@ -71,6 +70,7 @@ See `deploying/readme.md` for a complete list of configuration options.
 ### 1. Basic Application Structure
 
 The template uses the `McxClientApp` base class which handles:
+
 - Connection management
 - State machine control (engage/disengage)
 - Start/stop signal monitoring
@@ -86,12 +86,12 @@ class MyApp(McxClientApp):
         """Called after connection, before engaging"""
         # Initialize parameters, subscribe to data, etc.
         pass
-    
+
     def action(self):
         """Main application loop"""
         # Your application logic here
         self.wait(1)  # Wait with stop signal support
-    
+
     def onExit(self):
         """Called before disconnecting"""
         # Cleanup operations
@@ -141,7 +141,7 @@ docker build -t mcx-2025-03-37-deb-builder .
 # Build your Debian package
 cd ..
 docker run --rm -v "$PWD:/workspace" -w /workspace \
-    mcx-2025-03-37-deb-builder service_config.json
+    mcx-2025-03-37-deb-builder package_config.json
 ```
 
 The resulting `.deb` file will be in the `build/` folder.
@@ -156,21 +156,25 @@ The resulting `.deb` file will be in the `build/` folder.
 ## Key Features
 
 ### Connection Management
+
 - Automatic connection to Motorcortex server
 - TLS/SSL support with certificate validation
 - Automatic reconnection on connection loss
 
 ### State Machine Integration
+
 - Built-in engage/disengage functionality
 - Wait for specific states with timeout support
 - Stop signal handling for graceful shutdown
 
 ### Start/Stop Control
+
 - Optional start/stop parameter monitoring
 - Automatic start/restart when button is pressed
 - Clean shutdown when stopped
 
 ### Systemd Service
+
 - Automatic startup with Motorcortex server
 - Configurable restart behavior
 - Proper dependency management
@@ -183,7 +187,7 @@ Create your own systemd service template by modifying `deploying/template.servic
 
 ```json
 {
-    "SERVICE_TEMPLATE": "/workspace/my_custom_template.service.in"
+  "SERVICE_TEMPLATE": "/workspace/my_custom_template.service.in"
 }
 ```
 
@@ -213,19 +217,22 @@ Add your own Python dependencies by editing `requirements.txt` and rebuilding th
 ## Troubleshooting
 
 ### Connection Issues
+
 - Verify the `target_url` in `config.json`
 - Check certificate path (use `/etc/ssl/certs/mcx.cert.pem` on MCX-RTOS)
 - Ensure Motorcortex server is running and accessible
 
 ### Service Not Starting
+
 - Check service status: `systemctl status your-service-name`
 - View logs: `journalctl -u your-service-name -f`
 - Verify Python virtual environment was created correctly
 
 ### Build Issues
-- Ensure Docker is installed and running
-- Check file permissions in the workspace
-- Review build logs for specific errors
+
+- Ensure Docker is installed and running. Check in a terminal with `docker --version`
+- Review build logs for specific errors (The build log is printed in the output terminal 'Motorcortex Build')
+- Make sure all required files are present in the project directory
 
 ## Additional Resources
 
@@ -236,4 +243,3 @@ Add your own Python dependencies by editing `requirements.txt` and rebuilding th
 ## Support
 
 For issues, questions, or contributions, please refer to the Motorcortex documentation or contact Vectioneer support.
-
