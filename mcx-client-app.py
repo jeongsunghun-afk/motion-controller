@@ -47,7 +47,6 @@ class ExampleMcxClientApp(McxClientApp):
         
         # Initiate your variables here
         
-    
     def startOp(self) -> None:
         """
         Subscribe to button updates.

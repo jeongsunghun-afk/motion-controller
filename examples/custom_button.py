@@ -3,35 +3,23 @@ For this example the basic Motorcortex Anthropomorphic Robot application is used
 You can download it from the Motorcortex Store. 
 Make sure to have the Motorcortex Anthropomorphic Robot application running and that you can connect to it using the DESK-Tool.
 
-This example demonstrates how to create a custom button in the GUI that resets a counter in the script.
+This example shows how to create a custom button in the Motorcortex GUI that resets a counter when pressed.
 
-Add this to the end of the parameters.json file in the config/user folder of the Motorcortex Anthropomorphic Robot application:
-
+In `services_config.json`, two user Parameters have been added: 
+```json
 {
-      "Name": "GUI",
-      "Children": [
-        {
-          "Name": "PythonScript01",
-          "Children": [
-            {
-              "Name": "resetButton",
-              "Type": "bool, input",
-              "Value": 0
-            },
-            {
-              "Name": "StartButton",
-              "Type": "bool, input",
-              "Value": 0
-            },
-            {
-              "Name": "Counter",
-              "Type": "int,parameter_volatile",
-              "Value": 0
-            }
-          ]
-        }
-      ]
-    }
+  "Name": "resetButton",
+  "Type": "bool, input",
+  "Value": 0
+},
+{
+  "Name": "Counter",
+  "Type": "int,parameter_volatile",
+  "Value": 0
+}
+```
+
+
 """
 #
 #   Developer : Coen Smeets (Coen@vectioneer.com)
@@ -78,7 +66,11 @@ class Button:
         self._clicked: ThreadSafeValue[bool] = ThreadSafeValue(False) # To track click events if polling happens slower than button presses
 
     def subscription_callback(self, msg: list) -> None:
-        """Callback for button press - only trigger on rising edge (0 -> 1). (Happens in the subscription thread)"""
+        """Callback for button press - only trigger on rising edge (0 -> 1). (Happens in the subscription thread)
+        
+        Args:
+            msg (list): List of Motorcortex messages received from the subscription.
+        """
         value = msg[0].value[0]
         if value != 0 and not self.state.get():  # Button pressed (rising edge)
             self.state.set(True)
@@ -107,7 +99,7 @@ class CustomButtonApp(McxClientAppThread):
     def __init__(self, options: McxClientAppConfiguration):
         super().__init__(options)
         self.reset_button: Button = Button(
-            param = 'root/UserParameters/GUI/PythonScript01/resetButton',
+            param = f'{self.options.get_parameter_path}/userParameters/resetButton',
             raising_edge_callback = self.reset_counter
         )
         self.counter: int = 0
@@ -118,12 +110,12 @@ class CustomButtonApp(McxClientAppThread):
         Subscribe to button updates.
         """
         self.reset_button.subscription = self.sub.subscribe(
-            'root/UserParameters/GUI/PythonScript01/resetButton', 
+            f'{self.options.get_parameter_path}/userParameters/resetButton', 
             "Group1", 
             frq_divider=10 
         )
         self.reset_button.subscription.notify(self.reset_button.subscription_callback)
-        self.req.setParameter('root/UserParameters/GUI/PythonScript01/Counter', 0).get()
+        self.req.setParameter(f'{self.options.get_parameter_path}/userParameters/Counter', 0).get()
         
     def reset_counter(self) -> None:
       logging.info("Counter reset!")
@@ -136,19 +128,20 @@ class CustomButtonApp(McxClientAppThread):
         """
         self.counter += 1
         print(f"Counter: {self.counter}")
-        self.req.setParameter('root/UserParameters/GUI/PythonScript01/Counter', self.counter).get()
+        self.req.setParameter(f'{self.options.get_parameter_path}/userParameters/Counter', self.counter).get()
         
         self.reset_button.poll()
-        
-        self.wait(1)  # Wait 1 second between increments
+        self.wait(1.0)
 
 if __name__ == "__main__":
     client_options = McxClientAppConfiguration(
-        login="admin",
-        password="vectioneer",
-        target_url="wss://192.168.2.100",
-        start_stop_param="root/UserParameters/GUI/PythonScript01/StartButton"
+        name="CustomButtonExample"
     )
+    client_options.set_config_paths(
+        deployed_config="/etc/motorcortex/config/services/services_config.json",  # This is only needed when deployed on a Motorcortex controller. If only locally running, you can set it to None.
+        non_deployed_config="examples/services_config.json"
+    )
+    client_options.load_config()
 
     app = CustomButtonApp(client_options)
     app.run()

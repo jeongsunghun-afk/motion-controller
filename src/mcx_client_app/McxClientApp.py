@@ -34,6 +34,25 @@ waitForOperators = {
     "in": lambda a, b: a in b,
 }
 
+def map_subscription_reply(msg, param_layout: list[str]) -> dict:
+    """
+    Map subscription reply message to parameter path -> value dictionary.
+
+    Args:
+        msg: Subscription reply message (list of parameter values).
+        param_layout (list[str]): List of parameter paths corresponding to the message.
+    Returns:
+        dict: Dictionary mapping parameter paths to their values.
+    """
+    if (len(msg) != len(param_layout)):
+        logging.error(f"Message length {len(msg)} does not match parameter layout length {len(param_layout)}")
+    assert len(msg) == len(param_layout), "Message length and parameter layout length must match"
+
+    values: dict = {}
+    for i, path in enumerate(param_layout):
+        values[path] = msg[i].value
+    return values
+
 
 class StopSignal(Exception):
     """
@@ -102,6 +121,8 @@ class McxClientApp:
         self.__id = str(uuid.uuid4())
         self.running: ThreadSafeValue = ThreadSafeValue(False)
         self.__running_subscription: TypingOptional[motorcortex.Subscription] = None
+        # layout of the last control subscription (list of param paths)
+        self._control_params: list[str] = []
 
         self.watchdog: McxWatchdog = McxWatchdog(
             watchdog_folder_path=f"{self.options.get_parameter_path}/watchdog", 
@@ -209,39 +230,38 @@ class McxClientApp:
         """
         self.running.set(False)
     
-    def _running_callback(self, msg) -> None:
+    def _running_callback(self, msg:list) -> None:
         """
         Callback for control parameter changes (start/stop and/or state).
         (Happens in subscription thread.)
         """
-        # Determine if we should be running
-        should_run = True
-        
-        # Parse message based on subscription layout
-        if self.options.start_stop_param and self.options.allowed_states:
-            # Both parameters subscribed: [start_stop, state]
-            start_stop_value = msg[0].value[0]
-            state_value = msg[1].value[0]
-            
-            should_run = (start_stop_value != 0)
-            allowed_values = [s.value for s in self.options.allowed_states]
-            should_run = should_run and (state_value in allowed_values)
-            
-        elif self.options.start_stop_param:
-            # Only start/stop parameter
-            start_stop_value = msg[0].value[0]
-            should_run = (start_stop_value != 0)
-            
-        elif self.options.allowed_states:
-            # Only state parameter
-            state_value = msg[0].value[0]
-            allowed_values = [s.value for s in self.options.allowed_states]
-            should_run = (state_value in allowed_values)
-        
-        # Update running state if changed
+
+        result: dict = map_subscription_reply(msg, self._control_params)
+
+        isEnabled: bool = bool(result.get(f"{self.options.get_parameter_path}/isEnabled", [0])[0])
+
+        allowed_values = [s.value for s in self.options.allowed_states]
+        isAllowedState: bool = result.get(self.options.state_param, None) in allowed_values if self.options.allowed_states else True
+
+        should_run = isEnabled and isAllowedState
+
         if self.running.get() != should_run:
             logging.debug(f"Running state changed to {should_run}")
             self.running.set(should_run)
+
+    def _set_disable(self, value: bool) -> None:
+        """
+        Set the disable parameter to enable or disable the application.
+
+        Args:
+            value (bool): True to disable, False to enable.
+        """
+        try:
+            self.req.setParameter(f"{self.options.get_parameter_path}/disable", int(value)).get()
+        except Exception as e:
+            tb = traceback.format_exc()
+            logging.error(f"Failed to set to disable: '{f"{self.options.get_parameter_path}/disable"}': {e}\nTraceback:\n{tb}")
+            raise
             
     def _setupControlSubscription(self) -> None:
         """Set up single subscription for control parameters (start/stop and/or state).
@@ -250,30 +270,23 @@ class McxClientApp:
         relevant control parameters. On successful subscription the internal
         running callback is registered.
         """
-        control_params: list[str] = []
-        if self.options.start_stop_param:
-            try:
-                # Ensure the start/stop parameter is initialized to 0
-                self.req.setParameter(self.options.start_stop_param, 0).get()
-            except Exception as e:
-                tb = traceback.format_exc()
-                logging.error(f"Failed to initialize start/stop parameter '{self.options.start_stop_param}': {e}\n{tb}")
-                raise
-            control_params.append(self.options.start_stop_param)
+        self._control_params: list[str] = []
+
+        self._control_params.append(f"{self.options.get_parameter_path}/isEnabled")
 
         if self.options.allowed_states:
-            control_params.append(self.options.state_param)
+            self._control_params.append(self.options.state_param)
 
-        if control_params:
+        if self._control_params:
             try:
                 self.__running_subscription = self.sub.subscribe(
-                    control_params,
+                    self._control_params,
                     group_alias=f"{self.__id}_control",
-                    frq_divider=100
+                    frq_divider=1000
                 )
                 result = self.__running_subscription.get()
                 if result is not None and result.status == motorcortex.OK:
-                    logging.debug(f"Control parameters subscription successful: {control_params}")
+                    logging.debug(f"Control parameters subscription successful: {self._control_params}")
                     self.__running_subscription.notify(self._running_callback)
                 else:
                     logging.error("Failed to subscribe to control parameters.")
@@ -312,6 +325,9 @@ class McxClientApp:
         Override this method to perform actions before each iteration.
         """
         self.watchdog.setDisable(False)
+        result = self.req.setParameter(f"{self.options.get_parameter_path}/isIterating", int(True)).get()
+        if result is None or result.status != motorcortex.OK:
+            logging.error(f"Failed to set isIterating to True before iterate: {motorcortex.statusToStr(self.motorcortex_types.motorcortex(), result.status)}")
 
     def postIterate(self) -> None:
         """
@@ -319,6 +335,9 @@ class McxClientApp:
         Override this method to perform actions after each iteration.
         """
         self.watchdog.setDisable(True)
+        result = self.req.setParameter(f"{self.options.get_parameter_path}/isIterating", int(False)).get()
+        if result is None or result.status != motorcortex.OK:
+            logging.error(f"Failed to set isIterating to False after iterate: {motorcortex.statusToStr(self.motorcortex_types.motorcortex(), result.status)}")
 
     def run(self) -> None:
         """
@@ -340,15 +359,21 @@ class McxClientApp:
         self.startOp()
         
         # Initialize running state based on current conditions
-        if not self.options.start_stop_param and not self.options.allowed_states:
-            # No conditions to check, start immediately
-            self.running.set(True)
+        try:
+            # Ensure it starts as disabled
+            print(f"Setting to disable: '{f'{self.options.get_parameter_path}/disable'}' to {not self.options.autoStart}")
+            self.req.setParameter(f"{self.options.get_parameter_path}/disable", int(not self.options.autoStart)).get()
+        except Exception as e:
+            tb = traceback.format_exc()
+            logging.error(f"Failed to set to disable: '{f"{self.options.get_parameter_path}/disable"}': {e}\n{tb}")
+            raise
         
         try:
             while True:
                 try:
-                    
-                    logging.info("Waiting for start signal...")
+                    if (not self.options.autoStart and not self.running.get()):
+                        logging.info("autoStart not enabled so waiting to start...")
+
                     # Wait for running to become True
                     while not self.running.get():
                         time.sleep(0.1)
@@ -362,7 +387,7 @@ class McxClientApp:
                         self.watchdog.iterate()
                     self.postIterate()
                     
-                    logging.debug("Stop signal detected. Waiting for next start signal...")
+                    logging.debug("Iterate loop stopped...")
                     # Continue loop to wait for next start signal
                     
                 except StopSignal:
@@ -451,15 +476,21 @@ class McxClientAppThread(McxClientApp):
         self.startOp()
         
         # Initialize running state based on current conditions
-        if not self.options.start_stop_param and not self.options.allowed_states:
-            # No conditions to check, start immediately
-            self.running.set(True)
+        try:
+            # Ensure it starts as disabled according to autoStart
+            print(f"Setting to disable: '{f'{self.options.get_parameter_path}/disable'}' to {not self.options.autoStart}")
+            self.req.setParameter(f"{self.options.get_parameter_path}/disable", int(not self.options.autoStart)).get()
+        except Exception as e:
+            tb = traceback.format_exc()
+            logging.error(f"Failed to set to disable: '{f"{self.options.get_parameter_path}/disable"}': {e}\n{tb}")
+            raise
         
         try:
             while True:
                 try:
-                    
-                    logging.info("Waiting for start signal...")
+                    if (not self.options.autoStart and not self.running.get()):
+                        logging.info("autoStart not enabled so waiting to start...")
+
                     # Wait for running to become True
                     while not self.running.get():
                         time.sleep(0.1)

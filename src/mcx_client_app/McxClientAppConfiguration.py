@@ -64,8 +64,7 @@ class McxClientAppConfiguration:
         run_during_states (list[State]|None): List of allowed states during which the iterate() method can run (default None).
             If the system is not in one of these states, the iterate() method will not execute.
             If empty or None, the iterate() method can run in any state.
-        start_stop_param (str|None): Optional parameter path for start/stop control (default: None).
-            If provided, the application will monitor this parameter to start or stop operations.
+        autoStart (bool): Whether the application should start automatically upon connection or wait for `disable` to be turned off by hand (default: True).
         enable_watchdog (bool): Whether to enable the watchdog functionality (default: True).
     
     Note:
@@ -88,7 +87,7 @@ class McxClientAppConfiguration:
         statecmd_param: str | None = "root/Logic/stateCommand",
         state_param: str | None = "root/Logic/state",
         run_during_states: list = None,
-        start_stop_param: str | None = None,
+        autoStart: bool = True,
         enable_watchdog: bool = True,
         **kwargs
     ) -> None:
@@ -102,7 +101,7 @@ class McxClientAppConfiguration:
         self.statecmd_param = statecmd_param
         self.state_param = state_param
         self._run_during_states = State.list_from(run_during_states)
-        self.start_stop_param = start_stop_param
+        self.autoStart = autoStart
         self.enable_watchdog = enable_watchdog
         
         self.deployed_config: str = "/etc/motorcortex/config/services/services_config.json"
