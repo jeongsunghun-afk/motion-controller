@@ -8,14 +8,6 @@ This example demonstrates how to use a start/stop button to control the executio
 By default `autoStart` is set to `True` in the service configurations, meaning the application will start running immediately after connection.
 In this example we set `autoStart` to `False`, meaning the application will wait for the service to be enabled.
 
-A Motorcortex Service Module (generated in Motorcortex when you specify it in `service_config.json`) has three interesting Parameters: enable, disable and isEnabled.
-- The `enable` parameter is a command parameter. Writing a `True` value to it will enable the module. Use this to enable/disable the application long-term (Save the parameter to `contol.xml`).
-- The `disable` parameter is also a command parameter. Writing a `True` value to it will disable the module. Use this to disable the application short-term.
-- The `isEnabled` parameter is a status parameter. It indicates whether the module is currently enabled or disabled.
-
-When `autoStart` is set to `False`, the application will wait until the `isEnabled` parameter becomes `True` before starting its main loop.
-Thus, you can control when the application starts and stops by toggling the `disable` parameter via the Motorcortex DESK-Tool or other with a switch in the GRID.
-
 In service_config.json, the start button is enabled with the following snippet:
 ```json
 {
@@ -63,6 +55,7 @@ class StartButtonApp(McxClientApp):
         Main iterate: wait for 5 seconds.
         """
         # logging.info("Iterating...")
+        self.wait(5)
         pass
     
     def onExit(self) -> None:

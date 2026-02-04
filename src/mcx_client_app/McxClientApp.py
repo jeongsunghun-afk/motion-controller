@@ -20,6 +20,7 @@ import copy
 from .McxClientAppConfiguration import McxClientAppConfiguration
 from .McxWatchdog import McxWatchdog
 import traceback
+from enum import Enum
 
 T = TypeVar('T')
 
@@ -89,6 +90,61 @@ class ThreadSafeValue(Generic[T]):
         with self._lock:
             self.__value = copy.deepcopy(value)
 
+class ServiceStatus(Enum):
+    """
+    Enum representing service status values.
+    """
+    NOT_RUNNING = 0
+    WAITING_TO_START = 1
+    RUNNING = 2
+
+class StatusManager:
+    """
+    Manages status parameters for the McxClientApp.
+    """
+    def __init__(self, req: motorcortex.Request|None, base_path: str) -> None:
+        self.req = req
+        self.base_path = base_path
+        self.__status: ThreadSafeValue[ServiceStatus] = ThreadSafeValue(ServiceStatus.NOT_RUNNING)
+
+    def set_request(self, req: motorcortex.Request) -> None:
+        """
+        Set the motorcortex Request object.
+
+        Args:
+            req (motorcortex.Request): The request object to set.
+        """
+        self.req = req
+
+    def set_status(self, value: int) -> None:
+        """
+        Set a status parameter value.
+
+        Args:
+            value (int): Value to set.
+        """
+        if (self.req is None):
+            return
+        try:
+            status = ServiceStatus(value)
+        except ValueError:
+            raise ValueError(f"Invalid status value: {value}")
+        self.__status.set(ServiceStatus(value))
+        param_path = f"{self.base_path}/statusWord"
+        self.req.setParameter(param_path, value).get()
+
+    def get_status(self, status_name: str) -> int:
+        """
+        Get a status parameter value.
+
+        Args:
+            status_name (str): Name of the status parameter.
+
+        Returns:
+            int: The current value of the status parameter.
+        """
+        return self.__status.get()
+
 class McxClientApp:
     """
     Base client application for interacting with a Motorcortex server.
@@ -127,6 +183,10 @@ class McxClientApp:
         self.watchdog: McxWatchdog = McxWatchdog(
             watchdog_folder_path=f"{self.options.get_parameter_path}/watchdog", 
             enabled = self.options.enable_watchdog)
+        
+        self.statusManager = StatusManager(
+            req=self.req, 
+            base_path=self.options.get_parameter_path)
     
         
     def connect(self) -> None:
@@ -152,6 +212,7 @@ class McxClientApp:
             raise
 
         self.watchdog.set_request(self.req)
+        self.statusManager.set_request(self.req)
 
     def wait_for(
         self,
@@ -254,7 +315,7 @@ class McxClientApp:
 
         result: dict = map_subscription_reply(msg, self._control_params)
 
-        isEnabled: bool = bool(result.get(f"{self.options.get_parameter_path}/isEnabled", [0])[0])
+        isEnabled: bool = bool(result.get(f"{self.options.get_parameter_path}/enableService", [0])[0])
 
         # Extract the scalar current state value safely (subscription returns a list/tuple)
         current_state = None
@@ -273,20 +334,6 @@ class McxClientApp:
             logging.debug(f"Running state changed to {should_run}")
             self.running.set(should_run)
 
-    def _set_disable(self, value: bool) -> None:
-        """
-        Set the disable parameter to enable or disable the application.
-
-        Args:
-            value (bool): True to disable, False to enable.
-        """
-        try:
-            self.req.setParameter(f"{self.options.get_parameter_path}/disable", int(value)).get()
-        except Exception as e:
-            tb = traceback.format_exc()
-            logging.error(f"Failed to set to disable: '{f"{self.options.get_parameter_path}/disable"}': {e}\nTraceback:\n{tb}")
-            raise
-            
     def _setupControlSubscription(self) -> None:
         """Set up single subscription for control parameters (start/stop and/or state).
 
@@ -296,7 +343,7 @@ class McxClientApp:
         """
         self._control_params: list[str] = []
 
-        self._control_params.append(f"{self.options.get_parameter_path}/isEnabled")
+        self._control_params.append(f"{self.options.get_parameter_path}/enableService")
 
         if self.options.allowed_states:
             self._control_params.append(self.options.state_param)
@@ -349,9 +396,7 @@ class McxClientApp:
         Override this method to perform actions before each iteration.
         """
         self.watchdog.setDisable(False)
-        result = self.req.setParameter(f"{self.options.get_parameter_path}/isIterating", int(True)).get()
-        if result is None or result.status != motorcortex.OK:
-            logging.error(f"Failed to set isIterating to True before iterate: {motorcortex.statusToStr(self.motorcortex_types.motorcortex(), result.status)}")
+        self.statusManager.set_status(ServiceStatus.RUNNING.value)
 
     def postIterate(self) -> None:
         """
@@ -359,9 +404,7 @@ class McxClientApp:
         Override this method to perform actions after each iteration.
         """
         self.watchdog.setDisable(True)
-        result = self.req.setParameter(f"{self.options.get_parameter_path}/isIterating", int(False)).get()
-        if result is None or result.status != motorcortex.OK:
-            logging.error(f"Failed to set isIterating to False after iterate: {motorcortex.statusToStr(self.motorcortex_types.motorcortex(), result.status)}")
+        self.statusManager.set_status(ServiceStatus.NOT_RUNNING.value)
 
     def run(self) -> None:
         """
@@ -375,6 +418,7 @@ class McxClientApp:
         5. Monitors start/stop signals
         6. Disengages and calls onExit() before disconnecting
         """
+        
         self.connect()
         logging.debug("Connected to Motorcortex server.")
 
@@ -385,18 +429,19 @@ class McxClientApp:
         # Initialize running state based on current conditions
         try:
             # Ensure it starts as disabled
-            print(f"Setting to disable: '{f'{self.options.get_parameter_path}/disable'}' to {not self.options.autoStart}")
-            self.req.setParameter(f"{self.options.get_parameter_path}/disable", int(not self.options.autoStart)).get()
+            print(f"Setting to disable: '{f'{self.options.get_parameter_path}/enableService'}' to {not self.options.autoStart}")
+            self.req.setParameter(f"{self.options.get_parameter_path}/enableService", int(not self.options.autoStart)).get()
         except Exception as e:
             tb = traceback.format_exc()
-            logging.error(f"Failed to set to disable: '{f"{self.options.get_parameter_path}/disable"}': {e}\n{tb}")
+            logging.error(f"Failed to set to disable: '{f"{self.options.get_parameter_path}/enableService"}': {e}\n{tb}")
             raise
         
         try:
             while True:
                 try:
-                    if (not self.options.autoStart and not self.running.get()):
-                        logging.info("autoStart not enabled so waiting to start...")
+                    if (not self.running.get()):
+                        logging.info("Waiting to start...")
+                        self.statusManager.set_status(ServiceStatus.WAITING_TO_START.value)
 
                     # Wait for running to become True
                     while not self.running.get():
@@ -503,11 +548,11 @@ class McxClientAppThread(McxClientApp):
         # Initialize running state based on current conditions
         try:
             # Ensure it starts as disabled according to autoStart
-            print(f"Setting to disable: '{f'{self.options.get_parameter_path}/disable'}' to {not self.options.autoStart}")
-            self.req.setParameter(f"{self.options.get_parameter_path}/disable", int(not self.options.autoStart)).get()
+            print(f"Setting to disable: '{f'{self.options.get_parameter_path}/enableService'}' to {not self.options.autoStart}")
+            self.req.setParameter(f"{self.options.get_parameter_path}/enableService", int(not self.options.autoStart)).get()
         except Exception as e:
             tb = traceback.format_exc()
-            logging.error(f"Failed to set to disable: '{f"{self.options.get_parameter_path}/disable"}': {e}\n{tb}")
+            logging.error(f"Failed to set to disable: '{f"{self.options.get_parameter_path}/enableService"}': {e}\n{tb}")
             raise
         
         try:
@@ -515,6 +560,7 @@ class McxClientAppThread(McxClientApp):
                 try:
                     if (not self.options.autoStart and not self.running.get()):
                         logging.info("autoStart not enabled so waiting to start...")
+                        self.statusManager.set_status(ServiceStatus.WAITING_TO_START.value)
 
                     # Wait for running to become True
                     while not self.running.get():

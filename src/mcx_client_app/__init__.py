@@ -7,6 +7,7 @@ from .McxClientApp import McxClientApp, McxClientAppThread, StopSignal, ThreadSa
 from .McxClientAppConfiguration import McxClientAppConfiguration
 from .state_def import StateCommand, State
 from .McxWatchdog import McxWatchdog
+from .McxErrorHandler import McxErrorHandler
 
 # Version exposed at package level for convenience
 from ._version import __version__, get_version  # noqa: F401
