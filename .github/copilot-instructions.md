@@ -1,4 +1,3 @@
-
 # Motorcortex Client Application (MCX-Client-App) - AI Coding Instructions
 
 **CRITICAL: READ THESE INSTRUCTIONS COMPLETELY BEFORE GENERATING ANY CODE**
@@ -8,6 +7,7 @@ This document provides comprehensive servicesdance for AI agents to create, modi
 ---
 
 ## Table of Contents
+
 1. [How Client Apps Interact with Motorcortex](#how-client-apps-interact-with-motorcortex)
 2. [Project Overview](#project-overview)
 3. [Core Architecture](#core-architecture)
@@ -15,127 +15,159 @@ This document provides comprehensive servicesdance for AI agents to create, modi
 5. [Configuration System](#configuration-system)
 6. [Thread vs Non-Thread Usage](#thread-vs-non-thread-usage)
 7. [Subscription Patterns](#subscription-patterns)
-8. [Keep iterate() Clean - Best Practices](#keep-iterate-clean---best-practices)
-9. [Complete Working Examples](#complete-working-examples)
-10. [API Reference](#api-reference)
-11. [Coding Conventions](#coding-conventions)
+8. [Error Handler - Triggering System Errors](#error-handler---triggering-system-errors)
+9. [Keep iterate() Clean - Best Practices](#keep-iterate-clean---best-practices)
+10. [Complete Working Examples](#complete-working-examples)
+11. [API Reference](#api-reference)
+12. [Coding Conventions](#coding-conventions)
 
 ---
 
 ## How Client Apps Interact with Motorcortex
 
-MCX-Client-Apps connect to a **Motorcortex server on a Target** via WebSocket (e.g., `wss://192.168.1.100`) and interact with the **parameter tree** - a hierarchical structure with existing Motorcortex parameters (like `root/AGVControl/actualVelocityLocal`, `root/Sensors/Temperature`) and user-defined parameters under `root/UserParameters/` (like `root/UserParameters/services/StartButton`).
+MCX-Client-Apps connect to a **Motorcortex server on a Target** via WebSocket (e.g., `wss://192.168.1.100`) and interact with the **parameter tree** - a hierarchical structure with existing Motorcortex parameters (like `root/AGVControl/actualVelocityLocal`, `root/Sensors/Temperature`) and service-specific parameters.
 
 **Operations:** Read with `self.req.getParameter()`, write with `self.req.setParameter()`, subscribe for real-time updates with `self.sub.subscribe()`.
 
-### Adding Custom Parameters
+### Adding Custom Service Parameters
 
-**CRITICAL:** All custom client-app parameters **MUST** be under `root/UserParameters/...` - NEVER directly under `root/`!
+**CRITICAL:** All custom client-app parameters are automatically placed under `root/Services/{ServiceName}/serviceParameters/` when defined in the `Parameters` section of `services_config.json`.
 
 **IMPORTANT:** Only add parameters for **client-app-specific** controls (buttons, counters, settings). If a parameter path is provided like `root/AGVControl/actualVelocityLocal` or `root/Sensors/Temperature`, these **already exist** in the Motorcortex application's parameter tree - just read/subscribe to them directly. Do NOT document them as "required parameters".
 
-When your app needs **new UserParameters** that don't exist on the Target, **document them at the top of your file** so users know what to add to `parameters.json` in the Motorcortex application's `config/user` folder. These parameters are **always** placed under `root/UserParameters/...` in the tree.
+When your app needs **new service parameters**, define them in the `Parameters` section of your service configuration in `services_config.json`. These parameters will be automatically placed under `root/Services/{ServiceName}/serviceParameters/` in the parameter tree.
 
-### UserParameters vs McxClientAppConfiguration
+### Service Parameters vs McxClientAppConfiguration
 
 **Critical distinction:**
 
-**UserParameters (in parameter tree):**
+**Service Parameters (in parameter tree at `root/Services/{ServiceName}/serviceParameters/`):**
+
 - ✅ Use for values that **change during runtime** (buttons, setpoints, thresholds that users adjust)
 - ✅ Can be modified via DESK tool or other clients while app is running
-- ✅ Access with `self.req.getParameter()` or `self.sub.subscribe()`
+- ✅ Access with `self.req.getParameter(f"{self.options.get_service_parameter_path}/...")` or subscriptions
 - ✅ Changes take effect immediately
-- Example: `{"Name": "MaxSpeed", "Type": "double, input"}` in UserParameters
+- ✅ Defined in the `Parameters` section of `services_config.json`
+- Example: `{"Name": "MaxSpeed", "Type": "double, input"}` under service parameters
 
-**McxClientAppConfiguration (in config.json):**
+**McxClientAppConfiguration (in Config section):**
+
 - ✅ Use for values that are **set once at startup** and remain constant
 - ✅ Cannot be changed while app is running (requires restart)
 - ✅ Access via `self.options.connection_timeout`
 - ✅ Simpler, faster access (no network calls)
-- Example: `{"connection_timeout": 30}` in config.json
+- ✅ Defined in the `Config` section of `services_config.json`
+- Example: `{"connection_timeout": 30}` in Config section
 
-**Decision servicesde:**
+**Decision Guide:**
+
 ```python
-# ❌ WRONG: Static configuration in UserParameters when it never changes at runtime
+# ❌ WRONG: Static configuration in service parameters when it never changes at runtime
 # (Adds unnecessary complexity and network overhead)
+# In services_config.json Parameters section:
 {
-  "Name": "Configuration",
+  "Name": "Parameters",
   "Children": [
     {"Name": "LogFilePath", "Type": "string, parameter", "Value": "/var/log/app.log"}
   ]
 }
-# Then reading it with: self.req.getParameter("root/UserParameters/Configuration/LogFilePath")
+# Then reading: self.req.getParameter(f"{self.options.get_service_parameter_path}/LogFilePath")
 
-# ✅ CORRECT: Static configuration in config.json
-# config.json: {"log_file_path": "/var/log/app.log", "connection_timeout": 30}
+# ✅ CORRECT: Static configuration in Config section
+# In services_config.json Config section: {"log_file_path": "/var/log/app.log", "connection_timeout": 30}
 # Access: self.options.log_file_path
 
-# ✅ CORRECT: Runtime-adjustable parameter in UserParameters
+# ✅ CORRECT: Runtime-adjustable parameter in service parameters
+# In services_config.json Parameters section:
 {"Name": "VelocityThresholds", "Type": "double[6], parameter", "Value": [0.2, 0.4, 0.6, 0.8, 1.0, 1.5]}
+# Access: self.req.getParameter(f"{self.options.get_service_parameter_path}/VelocityThresholds")
 # User can change thresholds in DESK tool, app responds immediately via subscription
 ```
 
-**Required Docstring Format:**
+**Required Service Configuration Format:**
+
+Services are configured in `services_config.json` with the following structure:
+
+```json
+{
+  "Services": [
+    {
+      "Name": "RobotController",
+      "Enabled": true,
+      "Config": {
+        "login": "admin",
+        "password": "your_password",
+        "target_url": "wss://192.168.1.100",
+        "autoStart": true
+      },
+      "Parameters": {
+        "Version": "1.0",
+        "Children": [
+          {
+            "Name": "userParameters",
+            "Children": [
+              {
+                "Name": "StartButton",
+                "Type": "bool, input",
+                "Value": 0
+              },
+              {
+                "Name": "Counter",
+                "Type": "int, parameter_volatile",
+                "Value": 0
+              }
+            ]
+          }
+        ]
+      },
+      "Watchdog": {
+        "Enabled": true,
+        "Disabled": false,
+        "high": 1000000,
+        "tooHigh": 5000000
+      }
+    }
+  ]
+}
+```
+
+**Service Configuration Fields:**
+
+- `Name`: Service name (used in parameter tree as `root/Services/{Name}`)
+- `Enabled`: Whether service is enabled
+- `Config`: Runtime configuration (login, password, target_url, autoStart, custom fields) - access via `self.options.field_name`
+- `Parameters`: Service-specific parameters (placed under `root/Services/{Name}/serviceParameters/`) - access via `self.options.get_service_parameter_path`
+- `Watchdog`: Watchdog settings (enabled, thresholds in microseconds)
+
+**Application Code:**
 
 ```python
 """
 MCX-Client-App: Robot Controller
-
-REQUIRED PARAMETERS:
-Add this to the end of the parameters.json file in the config/user folder:
-
-{
-  "Name": "services",
-  "Children": [
-    {
-      "Name": "RobotController",
-      "Children": [
-        {
-          "Name": "StartButton",
-          "Type": "bool, input",
-          "Value": 0
-        },
-        {
-          "Name": "CycleCounter",
-          "Type": "int, parameter_volatile",
-          "Value": 0
-        },
-        {
-          "Name": "TargetSpeed",
-          "Type": "double, parameter",
-          "Value": 0.5
-        }
-      ]
-    }
-  ]
-}
-
-SETUP: 1) Add JSON above to parameters.json, 2) Restart Motorcortex, 3) Verify in DESK tool
-
-CONFIG FILE DEPLOYMENT (NEEDED WHEN YOU DEPLOY THE APP AS A DEBIAN PACKAGE):
-To deploy the config.json file through the Motorcortex portal:
-1. In the portal, navigate to your .conf folder (Configuration Files section)
-2. Create a 'services' folder if it doesn't exist yet
-3. Create a file named 'robot_controller.json' (use lowercase with underscores)
-4. Paste your config.json content into this file:
-   {
-       "login": "admin",
-       "password": "your_password",
-       "target_url": "wss://localhost",
-       "cert": "mcx.cert.crt",
-       "run_during_states": [],
-       "custom_field_1": "value1",
-       "custom_field_2": 123
-   }
-5. In your code, configure the deployed config path:
-   config.set_config_paths(
-       deployed_config="/etc/motorcortex/config/services/robot_controller.json",
-       non_deployed_config="config.json"
-   )
 """
 
 import logging
-from src.mcx_client_app import McxClientApp
+from src.mcx_client_app import McxClientApp, McxClientAppConfiguration
+
+class RobotController(McxClientApp):
+    def __init__(self, options: McxClientAppConfiguration):
+        super().__init__(options)
+
+    def iterate(self):
+        # Access service parameters via self.options.get_service_parameter_path
+        button = self.req.getParameter(f"{self.options.get_service_parameter_path}/StartButton").get().value[0]
+        self.req.setParameter(f"{self.options.get_service_parameter_path}/Counter", 42).get()
+        self.wait(1.0)
+
+if __name__ == "__main__":
+    config = McxClientAppConfiguration(name="RobotController")
+    config.set_config_paths(
+        deployed_config="/etc/motorcortex/config/services/services_config.json",
+        non_deployed_config="services_config.json"
+    )
+    config.load_config()
+    app = RobotController(config)
+    app.run()
 ```
 
 **Note:** Replace `"services/RobotController"` with your actual client app name for UserParameters organization, and use `"robot_controller.json"` (lowercase with underscores) as the config filename in the portal.
@@ -147,23 +179,27 @@ Parameter types follow the format: `<type>[array_size], <access_level>`
 **Base Types:** `bool`, `int`, `float`, `double`, `string`
 
 **Access Levels (from Target's perspective):**
+
 - **`input`**: Writable from client apps - client **writes**, Target **reads** (buttons, commands, setpoints that control the Target)
 - **`output`**: Read-only from client apps - Target **writes**, client **reads** (sensor data, status values from Target)
 - **`parameter`**: Configuration values (writable but typically set once during setup)
 - **`parameter_volatile`**: **RECOMMENDED for client app outputs** - Values that change frequently at runtime, written by client apps and read by other components
 
 **CRITICAL:** Access levels are from the **Target's point of view**, not the client app:
+
 - If your client app **outputs a value** to the tree → use `parameter_volatile` (optimized for frequent updates from client)
 - If your client app **reads a value** from the tree → use `output` (Target outputs data to client)
 - For buttons/commands that control the Target → use `input` (Target receives input from client)
 
 **Client Apps Can Only Write To:**
+
 - ✅ `input` parameters - Client can call `self.req.setParameter()`
 - ✅ `parameter` parameters - Client can call `self.req.setParameter()`
 - ✅ `parameter_volatile` parameters - Client can call `self.req.setParameter()` (RECOMMENDED for client outputs)
 - ❌ `output` parameters - **CANNOT** write! These are read-only from client perspective
 
 **Common Mistake:**
+
 ```python
 # ❌ WRONG: Declaring client app output as "output" type
 {"Name": "SafetyZone", "Type": "int, output", "Value": 0}
@@ -177,6 +213,7 @@ self.req.setParameter("root/.../SafetyZone", zone).get()  # Works! Best performa
 **Array Syntax:** Add `[N]` for arrays (e.g., `double[5], input`)
 
 **Examples:**
+
 - `bool, input` → Client writes, Target reads: Button press `0` or `1`
 - `int[3], input` → Client writes array: `[1, 2, 3]`
 - `double, output` → Target writes, client reads: Sensor value `42.5`
@@ -185,23 +222,26 @@ self.req.setParameter("root/.../SafetyZone", zone).get()  # Works! Best performa
 
 ### Best Practices
 
-✅ **DO:** 
+✅ **DO:**
+
 - Document required parameters in file docstring
 - Use descriptive names, organize hierarchically under `UserParameters`
 - **Use `parameter_volatile` type for client app outputs** (data that changes frequently, written by client)
 - **Use `input` type for control commands** (buttons, commands that trigger actions on Target)
 - **Use `output` type for Target data** (data flowing FROM Target TO client)
 - **Group related parameters as arrays** instead of separate entries:
+
   ```json
   // ❌ BAD: Multiple separate threshold parameters
   {"Name": "Zone1Threshold", "Type": "double, parameter", "Value": 0.2}
   {"Name": "Zone2Threshold", "Type": "double, parameter", "Value": 0.4}
-  
+
   // ✅ GOOD: Single array parameter
   {"Name": "ZoneThresholds", "Type": "double[6], parameter", "Value": [0.2, 0.4, 0.6, 0.8, 1.0, 1.5]}
   ```
 
-❌ **DON'T:** 
+❌ **DON'T:**
+
 - Assume parameters exist, use generic names like `param1`
 - **Create custom parameters directly under `root/`** - ALL custom params MUST be under `root/UserParameters/`
 - Use `output` type for values your client app writes (use `parameter_volatile` instead)
@@ -210,80 +250,53 @@ self.req.setParameter("root/.../SafetyZone", zone).get()  # Works! Best performa
 
 ### Accessing Parameters in Code
 
-**IMPORTANT:** Always store parameter paths in your custom `McxClientAppConfiguration` class so they can be configured in `config.json`. **Never hardcode parameter paths** directly in `getParameter()` or `setParameter()` calls.
+**Service parameters** are automatically scoped to your service and accessed via `self.options.get_service_parameter_path`:
 
-✅ **CORRECT - Configurable parameter paths:**
 ```python
-class MyAppConfiguration(McxClientAppConfiguration):
-    """Configuration with parameter paths that can be changed in config.json."""
-    def __init__(
-        self,
-        start_button_param: str = "root/UserParameters/services/MyApp/StartButton",
-        counter_param: str = "root/UserParameters/services/MyApp/Counter",
-        velocity_param: str = "root/AGVControl/actualVelocityLocal",
-        **kwargs
-    ):
-        self.start_button_param = start_button_param
-        self.counter_param = counter_param
-        self.velocity_param = velocity_param
-        super().__init__(**kwargs)
-
 class MyApp(McxClientApp):
-    def __init__(self, options: MyAppConfiguration):
-        super().__init__(options)
-        self.options: MyAppConfiguration  # Type hint
-    
     def iterate(self):
-        # ✅ Use self.options.parameter_name - configurable via config.json
-        value = self.req.getParameter(self.options.start_button_param).get().value[0]
-        self.req.setParameter(self.options.counter_param, 42).get()
+        # ✅ CORRECT: Access service parameters using get_service_parameter_path
+        button = self.req.getParameter(f"{self.options.get_service_parameter_path}/StartButton").get().value[0]
+        self.req.setParameter(f"{self.options.get_service_parameter_path}/Counter", 42).get()
+
+        # ✅ CORRECT: Access existing Motorcortex parameters directly
+        velocity = self.req.getParameter("root/AGVControl/actualVelocityLocal").get().value[0]
 ```
 
-**config.json:**
-```json
-{
-    "login": "",
-    "password": "",
-    "target_url": "wss://192.168.1.100",
-    "cert": "mcx.cert.crt",
-    "start_button_param": "root/UserParameters/services/CustomApp/StartButton",
-    "counter_param": "root/UserParameters/services/CustomApp/Counter",
-    "velocity_param": "root/AGVControl/actualVelocityLocal"
-}
-```
+❌ **WRONG - Hardcoded service parameter paths:**
 
-❌ **WRONG - Hardcoded parameter paths:**
 ```python
 def iterate(self):
-    # ❌ Hardcoded paths - cannot be changed without modifying code!
-    value = self.req.getParameter("root/UserParameters/services/StartButton").get().value[0]
-    self.req.setParameter("root/UserParameters/services/Counter", 42).get()
+    # ❌ Hardcoded paths - don't do this!
+    value = self.req.getParameter("root/Services/MyApp/serviceParameters/userParameters/StartButton").get().value[0]
 ```
 
 **Parameter Access Patterns:**
 
 ```python
-# Read parameter (any type) - use self.options.param_name
-value = self.req.getParameter(self.options.start_button_param).get().value[0]
+# Read service parameter (any type)
+value = self.req.getParameter(f"{self.options.get_service_parameter_path}/StartButton").get().value[0]
 
-# Write parameter (only works on "input" and "parameter" types!)
-self.req.setParameter(self.options.counter_param, 42).get()  # ✅ OK if Counter is "input"
-self.req.setParameter(self.options.status_param, "ready").get()  # ❌ FAILS if Status is "output"
+# Write service parameter (only works on "input" and "parameter" types!)
+self.req.setParameter(f"{self.options.get_service_parameter_path}/Counter", 42).get()  # ✅ OK if Counter is "input"
 
 # Array parameter
-speeds = self.req.getParameter(self.options.speeds_param).get().value
+speeds = self.req.getParameter(f"{self.options.get_service_parameter_path}/Speeds").get().value
 # Returns: [0.1, 0.2, 0.3, ...]
 
-# Subscribe for real-time updates - use self.options.param_name
-self.sub.subscribe([self.options.start_button_param], group_alias="btn").get().notify(self._onButtonChange)
+# Subscribe for real-time updates
+self.sub.subscribe(
+    [f"{self.options.get_service_parameter_path}/StartButton"],
+    group_alias="btn"
+).get().notify(self._onButtonChange)
 ```
 
 **Why This Matters:**
-- ✅ Users can customize parameter paths in `config.json` without editing code
-- ✅ Makes apps reusable across different Motorcortex configurations
-- ✅ Easier to maintain and test with different parameter structures
-- ✅ Follows configuration best practices
-- **`parameter`**: Configuration values (writable but typically set once during setup)
+
+- ✅ Parameters automatically scoped to your service
+- ✅ No naming conflicts with other services
+- ✅ Cleaner, more maintainable code
+- ✅ Follows framework best practices
 
 ### Example: Complete Documentation
 
@@ -291,42 +304,43 @@ self.sub.subscribe([self.options.start_button_param], group_alias="btn").get().n
 """
 MCX-Client-App: Pick and Place Robot Controller
 
-REQUIRED PARAMETERS:
-Add this to the end of the parameters.json file in the config/user folder 
-of the Motorcortex Anthropomorphic Robot application:
-
+REQUIRED SERVICE CONFIGURATION:
+Add this service to services_config.json:
 {
-  "Name": "services",
-  "Children": [
-    {
-      "Name": "PickPlaceController",
-      "Children": [
-        {
-          "Name": "StartButton",
-          "Type": "bool, input",
-          "Value": 0
-        },
-        {
-          "Name": "ResetButton",
-          "Type": "bool, input",
-          "Value": 0
-        },
-        {
-          "Name": "CycleCounter",
-          "Type": "int, parameter_volatile",
-          "Value": 0
-        }
-      ]
-    }
-  ]
+  "Name": "PickPlaceController",
+  "Enabled": true,
+  "Parameters": {
+    "Version": "1.0",
+    "Children": [
+      {
+        "Name": "userParameters",
+        "Children": [
+          {
+            "Name": "StartButton",
+            "Type": "bool, input",
+            "Value": 0
+          },
+          {
+            "Name": "ResetButton",
+            "Type": "bool, input",
+            "Value": 0
+          },
+          {
+            "Name": "CycleCounter",
+            "Type": "int, parameter_volatile",
+            "Value": 0
+          }
+        ]
+      }
+    ]
+  }
 }
 
-INSTRUCTIONS: Add JSON to config/user/parameters.json in Motorcortex app, restart, verify in DESK tool.
+ACCESS IN CODE:
+# Read:      self.req.getParameter(f"{self.options.get_service_parameter_path}/StartButton").get().value[0]
+# Write:     self.req.setParameter(f"{self.options.get_service_parameter_path}/CycleCounter", 42).get()
+# Subscribe: self.sub.subscribe([f"{self.options.get_service_parameter_path}/StartButton"], "alias").get().notify(callback)
 """
-
-# Read parameter:  self.req.getParameter("root/UserParameters/services/PickPlaceController/StartButton").get().value[0]
-# Write parameter: self.req.setParameter("root/UserParameters/services/PickPlaceController/CycleCounter", 42).get()
-# Subscribe:       self.sub.subscribe(["root/UserParameters/services/PickPlaceController/..."], "alias").get().notify(callback)
 ```
 
 ---
@@ -334,6 +348,7 @@ INSTRUCTIONS: Add JSON to config/user/parameters.json in Motorcortex app, restar
 ## Project Overview
 
 The MCX-Client-App template provides a framework for creating Python applications that:
+
 - Connect to Motorcortex servers via WebSocket (using `motorcortex-python` library)
 - Control robots using the `robot_control` API
 - Monitor and set parameters in real-time
@@ -341,6 +356,7 @@ The MCX-Client-App template provides a framework for creating Python application
 - Deploy as Debian packages on MCX-RTOS systems
 
 **Key Files:**
+
 - [mcx-client-app.py](../mcx-client-app.py) - Main template file (modify this)
 - [src/mcx_client_app/McxClientApp.py](../src/mcx_client_app/McxClientApp.py) - Base classes (do not modify)
 - [src/mcx_client_app/McxClientAppConfiguration.py](../src/mcx_client_app/McxClientAppConfiguration.py) - Configuration class (extend if needed)
@@ -352,23 +368,25 @@ The MCX-Client-App template provides a framework for creating Python application
 When you modify the project structure, **immediately update the relevant configuration files**:
 
 1. **Rename/create Python script** → Update `service_config.json`:
+
    ```json
    {
      "PACKAGE_NAME": "my-client-app",
-     "PYTHON_SCRIPT": "my_new_script.py",  // ← Update when renaming mcx-client-app.py
+     "PYTHON_SCRIPT": "my_new_script.py", // ← Update when renaming mcx-client-app.py
      "PYTHON_MODULES": "src",
      "DEBUG_ON": false
    }
    ```
 
 2. **Add custom configuration fields** → Update `config.json`:
+
    ```json
    {
      "login": "",
      "password": "",
      "target_url": "wss://192.168.1.100",
      "cert": "mcx.cert.crt",
-     "my_custom_field": 123  // ← Add your custom fields here
+     "my_custom_field": 123 // ← Add your custom fields here
    }
    ```
 
@@ -381,6 +399,7 @@ When you modify the project structure, **immediately update the relevant configu
    ```
 
 **Common scenarios requiring config updates:**
+
 - Creating a new main script file → Update `PYTHON_SCRIPT` in service_config.json
 - Changing package name for deployment → Update `PACKAGE_NAME` in service_config.json
 - Adding custom configuration options → Add fields to config.json AND custom Configuration class
@@ -393,6 +412,7 @@ When you modify the project structure, **immediately update the relevant configu
 ### Base Classes
 
 **`McxClientApp`** - Main thread execution
+
 ```python
 from src.mcx_client_app import McxClientApp, McxClientAppConfiguration
 
@@ -403,6 +423,7 @@ class MyApp(McxClientApp):
 ```
 
 **`McxClientAppThread`** - Separate thread execution
+
 ```python
 from src.mcx_client_app import McxClientAppThread, McxClientAppConfiguration
 
@@ -430,9 +451,84 @@ self.parameter_tree     # motorcortex.ParameterTree - parameter structure
 self.motorcortex_types  # motorcortex.MessageTypes - message type definitions
 self.options            # McxClientAppConfiguration - your configuration
 self.running            # ThreadSafeValue[bool] - current running state
+self.watchdog           # McxWatchdog - watchdog manager (automatically kept alive)
+self.errorHandler       # McxErrorHandler - error handler for triggering system errors
 ```
 
+**CRITICAL - Watchdog Best Practices:**
+
+The watchdog is **automatically managed** and kept alive when you use `self.wait()` or `self.wait_for()` methods.
+
+✅ **DO:**
+
+- Use `self.wait()` for delays - keeps watchdog alive automatically
+- Use `self.wait_for()` for waiting on conditions - keeps watchdog alive
+- Keep `iterate()` free of long blocking operations
+
+❌ **DON'T:**
+
+- Use `time.sleep()` - watchdog will timeout!
+- Block in `iterate()` without calling `self.wait()`
+- Perform long computations without periodic `self.wait()` calls
+
+**Example - Correct Watchdog Usage:**
+
+```python
+def iterate(self):
+    # ✅ CORRECT: Uses self.wait() which keeps watchdog alive
+    self.process_data()
+    self.wait(1.0)  # Automatically keeps watchdog alive
+
+    # ✅ CORRECT: For long operations, add periodic waits
+    for i in range(1000):
+        self.heavy_computation(i)
+        if i % 100 == 0:
+            self.wait(0.01)  # Keep watchdog alive during long loop
+
+# ❌ WRONG: time.sleep() doesn't keep watchdog alive
+def iterate(self):
+    import time
+    time.sleep(1.0)  # WATCHDOG WILL TIMEOUT!
+```
+
+**Error Handler Usage:**
+
+The `self.errorHandler` provides methods to trigger system-level errors at different severity levels:
+
+```python
+# In startOp(), optionally configure error handler
+def startOp(self):
+    self.errorHandler.set_subsystem_id(1)  # Optional: identify subsystem
+    self.errorHandler.set_acknowledge_callback(self.on_error_acknowledged)
+
+# Trigger errors at different levels
+def iterate(self):
+    if critical_condition:
+        self.errorHandler.trigger_emergency_stop(error_code=5001)  # Most severe
+    elif shutdown_needed:
+        self.errorHandler.trigger_shutdown(error_code=4001)
+    elif forced_disengage:
+        self.errorHandler.trigger_forced_disengage(error_code=3001)
+    elif warning_condition:
+        self.errorHandler.trigger_warning(error_code=1001)  # Least severe
+
+# Optional callback when error is acknowledged
+def on_error_acknowledged(self):
+    logging.info("Error was acknowledged by user")
+    # Reset your application state here
+```
+
+**Error Levels (from MotorcortexErrorLevel enum):**
+
+- `ERROR_LEVEL_UNDEFINED` (0): Undefined
+- `INFO` (1): Information message
+- `WARNING` (2): Warning - does not stop system
+- `FORCED_DISENGAGE` (3): Graceful software stop
+- `SHUTDOWN` (4): Abrupt software stop
+- `EMERGENCY_STOP` (5): Abrupt software and hardware stop
+
 **IMPORTANT:** To check subscription status, import `motorcortex.OK` directly:
+
 ```python
 import motorcortex
 
@@ -447,17 +543,25 @@ if result and result.status == self.motorcortex_types.OK:  # AttributeError!
 ### Inherited Methods (Available in Your Class)
 
 ```python
-self.wait(timeout: float = 30, testinterval: float = 0.2, block_stop_signal: bool = False) -> bool
+self.wait(timeout: float = 30, testinterval: float = 0.2,
+          keep_watchdog: bool = True, block_stop_signal: bool = False) -> bool
 # Wait for timeout seconds, checking for stop signal. Raises StopSignal when stopped.
+# keep_watchdog: If True (default), automatically keeps watchdog alive during wait
+# block_stop_signal: If True, ignore stop signals during this wait
 
-self.wait_for(param: str, value: object, index: int = 0, timeout: float = 30, 
-              testinterval: float = 0.2, operat: str = "==", block_stop_signal: bool = False) -> bool
+self.wait_for(param: str, value: object, index: int = 0, timeout: float = 30,
+              testinterval: float = 0.2, operat: str = "==",
+              keep_watchdog: bool = True, block_stop_signal: bool = False) -> bool
 # Wait for parameter to meet condition. Raises StopSignal when stopped.
 # Operators: "==", "!=", "<", "<=", ">", ">=", "in"
+# keep_watchdog: If True (default), automatically keeps watchdog alive while waiting
+# block_stop_signal: If True, ignore stop signals during this wait
 
 self.reset() -> None
 # Set running flag to False (stops the iterate loop)
 ```
+
+**Note:** Both `wait()` and `wait_for()` automatically keep the watchdog alive by default (`keep_watchdog=True`). This ensures your application doesn't timeout during normal operations.
 
 ---
 
@@ -473,7 +577,7 @@ from src.mcx_client_app import McxClientAppConfiguration
 class MyAppConfiguration(McxClientAppConfiguration):
     """
     Custom configuration with additional parameters.
-    
+
     Attributes:
         speed (float): Movement speed in m/s.
         cycle_count (int): Number of cycles to execute.
@@ -486,17 +590,39 @@ class MyAppConfiguration(McxClientAppConfiguration):
         super().__init__(**kwargs)
 ```
 
-**Update config.json with your custom fields:**
+**Update services_config.json with your service configuration:**
+
 ```json
 {
-    "login": "",
-    "password": "",
-    "target_url": "wss://192.168.1.100",
-    "cert": "mcx.cert.crt",
-    "speed": 0.8,
-    "cycle_count": 20
+  "Services": [
+    {
+      "Name": "MyApp",
+      "Enabled": true,
+      "Config": {
+        "login": "admin",
+        "password": "password",
+        "target_url": "wss://192.168.1.100",
+        "autoStart": true,
+        "speed": 0.8,
+        "cycle_count": 20
+      },
+      "Watchdog": {
+        "Enabled": true,
+        "Disabled": false,
+        "high": 1000000,
+        "tooHigh": 5000000
+      }
+    }
+  ]
 }
 ```
+
+**Important Configuration Parameters:**
+
+- `autoStart`: If `true`, app starts immediately. If `false`, waits for `enableService` parameter
+- `Watchdog.Enabled`: Enable watchdog monitoring (recommended: true)
+- `Watchdog.high`: Warning threshold in microseconds
+- `Watchdog.tooHigh`: Error threshold in microseconds
 
 ### Step 2: Create Your Application Class
 
@@ -514,34 +640,47 @@ class MyApp(McxClientApp):
         self.counter = 0
         self.my_subscription = None
         logging.info("MyApp initialized.")
-    
+
     def startOp(self) -> None:
         """
         Setup subscriptions and initialize parameters after connection.
         This runs once when the application connects to Motorcortex.
         """
-        # Set initial parameter values
+        # Configure error handler (optional)
+        self.errorHandler.set_subsystem_id(1)
+        self.errorHandler.set_acknowledge_callback(self.on_error_acknowledged)
+
+        # Set initial parameter values using service parameter path
         try:
-            self.req.setParameter("root/Operations/Counter", 0).get()
+            self.req.setParameter(f"{self.options.get_service_parameter_path}/Counter", 0).get()
             logging.info("Counter parameter initialized.")
         except Exception as e:
             logging.error(f"Failed to initialize counter: {e}")
-        
+
         # Setup subscriptions (see Subscription Patterns section)
         self._setupSubscriptions()
-    
+
     def iterate(self) -> None:
         """
         Main application logic - called repeatedly while running.
         Keep this method clean and focused (see Best Practices section).
+
+        CRITICAL: Use self.wait() instead of time.sleep() to keep watchdog alive!
         """
         # Your main logic here
         self.counter += 1
         logging.info(f"Iteration {self.counter}")
-        
-        # Use self.wait() to allow stop signal checking
+
+        # ✅ CORRECT: Use self.wait() - automatically keeps watchdog alive
         self.wait(1.0)  # Wait 1 second
-    
+
+    def on_error_acknowledged(self) -> None:
+        """
+        Called when user acknowledges an error (optional).
+        """
+        logging.info("Error acknowledged by user")
+        # Reset application state here
+
     def onExit(self) -> None:
         """
         Cleanup before disconnecting.
@@ -549,9 +688,9 @@ class MyApp(McxClientApp):
         # Unsubscribe from subscriptions
         if self.my_subscription:
             self.my_subscription.unsubscribe()
-        
+
         logging.info(f"Exiting after {self.counter} iterations.")
-    
+
     def _setupSubscriptions(self) -> None:
         """
         Private helper method to setup subscriptions.
@@ -568,17 +707,47 @@ if __name__ == "__main__":
 
 ### Step 3: Configure and Run
 
-**Minimal config.json:**
+**Minimal services_config.json:**
+
 ```json
 {
-    "login": "",
-    "password": "",
-    "target_url": "wss://localhost",
-    "cert": "mcx.cert.crt"
+  "Services": [
+    {
+      "Name": "MyApp",
+      "Enabled": true,
+      "Config": {
+        "login": "admin",
+        "password": "password",
+        "target_url": "wss://localhost",
+        "autoStart": true
+      },
+      "Watchdog": {
+        "Enabled": true,
+        "Disabled": false,
+        "high": 1000000,
+        "tooHigh": 5000000
+      }
+    }
+  ]
 }
 ```
 
+**Main block:**
+
+```python
+if __name__ == "__main__":
+    config = MyAppConfiguration(name="MyApp")
+    config.set_config_paths(
+        deployed_config="/etc/motorcortex/config/services/services_config.json",
+        non_deployed_config="services_config.json"
+    )
+    config.load_config()
+    app = MyApp(config)
+    app.run()
+```
+
 **Run locally:**
+
 ```bash
 python3 mcx-client-app.py
 ```
@@ -600,12 +769,12 @@ McxClientAppConfiguration(
     target_url_deployed: str = "wss://localhost",  # URL when deployed
     cert: str = "mcx.cert.crt",            # SSL certificate (local)
     cert_deployed: str = "/etc/ssl/certs/mcx.cert.pem",  # Certificate (deployed)
-    
+
     # State management
     statecmd_param: str | None = "root/Logic/stateCommand",  # State command parameter
     state_param: str | None = "root/Logic/state",            # Current state parameter
     run_during_states: list = None,        # List of State enums when iterate() can run
-    
+
     # Start/stop control
     start_stop_param: str | None = None,   # Parameter to monitor for start/stop (e.g., button)
 )
@@ -614,6 +783,7 @@ McxClientAppConfiguration(
 ### Automatic Deployment Detection
 
 The configuration automatically detects deployment via `CONFIG_PATH` environment variable:
+
 - **Local development**: Uses `target_url` and `cert`
 - **Deployed**: Uses `target_url_deployed` and `cert_deployed`, loads from `CONFIG_PATH`
 
@@ -634,24 +804,20 @@ If `run_during_states` is empty or `None`, the app runs in any state.
 
 ### Using Start/Stop Parameters
 
-Monitor a Motorcortex parameter as a start/stop button:
+The framework automatically manages service enable/disable via the `enableService` parameter under `root/Services/{ServiceName}/enableService`.
+
+To control when your app runs:
+
+- Set `autoStart: true` in Config → app starts immediately when service is enabled
+- Set `autoStart: false` in Config → app waits for `enableService` parameter to be set to 1
 
 ```python
-config = MyAppConfiguration(
-    target_url="wss://192.168.1.100",
-    start_stop_param="root/UserParameters/services/PythonScript01/StartButton",
-)
-```
-
-When the parameter is non-zero, `iterate()` runs. When zero, it stops.
-
-**Combining both:**
-```python
-config = MyAppConfiguration(
-    run_during_states=[State.ENGAGED_S],
-    start_stop_param="root/UserParameters/services/StartButton",
-)
-# iterate() runs only when state is ENGAGED AND start_stop_param is non-zero
+# In services_config.json:
+{
+  "Config": {
+    "autoStart": false  # Wait for manual enable
+  }
+}
 ```
 
 ---
@@ -661,6 +827,7 @@ config = MyAppConfiguration(
 ### Use `McxClientApp` (Main Thread) When:
 
 ✅ **Simple sequential workflows**
+
 ```python
 class SequentialApp(McxClientApp):
     def iterate(self):
@@ -674,7 +841,8 @@ class SequentialApp(McxClientApp):
 ✅ **Simpler debugging** - Single-threaded execution is easier to trace
 ✅ **No concurrent operations** - No need for parallel monitoring
 
-**Behavior:** 
+**Behavior:**
+
 - `iterate()` runs in main thread
 - Stop signal checked in `wait()` and `wait_for()` calls
 - Blocking execution
@@ -682,6 +850,7 @@ class SequentialApp(McxClientApp):
 ### Use `McxClientAppThread` (Separate Thread) When:
 
 ✅ **Long-running operations** that should be independently stoppable
+
 ```python
 class LongRunningApp(McxClientAppThread):
     def iterate(self):
@@ -696,11 +865,13 @@ class LongRunningApp(McxClientAppThread):
 ✅ **Responsive stopping** - Need immediate response to stop signals without waiting for iterate() to complete
 
 **Behavior:**
+
 - `iterate()` runs in separate daemon thread
 - Main thread monitors `running` state independently
 - Thread stops when `running` becomes `False`
 
 **IMPORTANT:** When using `McxClientAppThread`, check `self.running.get()` in long loops:
+
 ```python
 def iterate(self):
     while self.running.get():  # Check running state
@@ -710,14 +881,14 @@ def iterate(self):
 
 ### Decision Matrix
 
-| Scenario | Use | Reason |
-|----------|-----|--------|
-| Sequential steps with waits | `McxClientApp` | Simple, clear flow |
-| Robot motion programs | `McxClientApp` | Sequential motion commands |
-| Data logging every N seconds | `McxClientApp` | Simple periodic task |
-| Long computation | `McxClientAppThread` | Can stop mid-computation |
-| Real-time monitoring | `McxClientAppThread` | Independent monitoring |
-| Complex state machines | `McxClientApp` | Easier to debug |
+| Scenario                     | Use                  | Reason                     |
+| ---------------------------- | -------------------- | -------------------------- |
+| Sequential steps with waits  | `McxClientApp`       | Simple, clear flow         |
+| Robot motion programs        | `McxClientApp`       | Sequential motion commands |
+| Data logging every N seconds | `McxClientApp`       | Simple periodic task       |
+| Long computation             | `McxClientAppThread` | Can stop mid-computation   |
+| Real-time monitoring         | `McxClientAppThread` | Independent monitoring     |
+| Complex state machines       | `McxClientApp`       | Easier to debug            |
 
 **Default recommendation:** Start with `McxClientApp` unless you have a specific need for threading.
 
@@ -737,7 +908,7 @@ def startOp(self) -> None:
         group_alias="reset_button_group",
         frq_divider=10  # Update every 10 cycles
     )
-    
+
     result = self.button_subscription.get()
     if result and result.status == motorcortex.OK:
         self.button_subscription.notify(self._onButtonUpdate)
@@ -763,13 +934,13 @@ def startOp(self) -> None:
     self.sensor_subscription = self.sub.subscribe(
         [
             "root/Sensors/Temperature",
-            "root/Sensors/Pressure", 
+            "root/Sensors/Pressure",
             "root/Sensors/Humidity"
         ],
         group_alias="sensor_group",
         frq_divider=100
     )
-    
+
     result = self.sensor_subscription.get()
     if result and result.status == motorcortex.OK:
         self.sensor_subscription.notify(self._onSensorUpdate)
@@ -782,7 +953,7 @@ def _onSensorUpdate(self, msg) -> None:
     temp = msg[0].value[0]
     pressure = msg[1].value[0]
     humidity = msg[2].value[0]
-    
+
     # Store in thread-safe containers
     self.latest_temperature.set(temp)
     self.latest_pressure.set(pressure)
@@ -800,28 +971,28 @@ class MyApp(McxClientApp):
         # Use ThreadSafeValue for data shared between threads
         self.sensor_value = ThreadSafeValue(0.0)
         self.alarm_active = ThreadSafeValue(False)
-    
+
     def startOp(self):
         self.sub.subscribe(
             ["root/Sensors/Value"],
             group_alias="sensor"
         ).get().notify(self._onSensorUpdate)
-    
+
     def _onSensorUpdate(self, msg):
         """Runs in subscription thread"""
         value = msg[0].value[0]
         self.sensor_value.set(value)  # Thread-safe write
-        
+
         if value > 100:
             self.alarm_active.set(True)
-    
+
     def iterate(self):
         """Runs in main thread"""
         current = self.sensor_value.get()  # Thread-safe read
         if self.alarm_active.get():
             logging.warning(f"Alarm! Sensor value: {current}")
             self.alarm_active.set(False)
-        
+
         self.wait(1)
 ```
 
@@ -836,7 +1007,7 @@ def onExit(self) -> None:
             logging.info("Unsubscribed from button")
         except Exception as e:
             logging.error(f"Error unsubscribing: {e}")
-    
+
     if self.sensor_subscription:
         try:
             self.sensor_subscription.unsubscribe()
@@ -863,12 +1034,14 @@ def onExit(self) -> None:
 **When to Group Parameters:**
 
 ✅ **DO group when:**
+
 - Parameters are **logically related** (all sensor readings, all configuration values)
 - Parameters need the **same update frequency** (same `frq_divider`)
 - Parameters are processed **together** in your logic
 - Reading from the **same subsystem** (e.g., all from `root/Sensors/`, all from `root/AGVControl/`)
 
 ❌ **DON'T group when:**
+
 - Parameters need **different update frequencies** (one needs 10Hz, another 100Hz)
 - One is **critical, low-latency** and others are not
 - Parameters are **completely unrelated** and processed separately
@@ -877,6 +1050,7 @@ def onExit(self) -> None:
 **Examples:**
 
 ✅ **GOOD - Grouped subscription (preferred):**
+
 ```python
 def startOp(self) -> None:
     """Group all related sensor readings in ONE subscription."""
@@ -903,6 +1077,7 @@ def _onSensorUpdate(self, msg) -> None:
 ```
 
 ❌ **BAD - Separate subscriptions (inefficient):**
+
 ```python
 def startOp(self) -> None:
     """Don't do this - wastes resources with 4 separate subscriptions!"""
@@ -915,6 +1090,7 @@ def startOp(self) -> None:
 ```
 
 ✅ **GOOD - Separate subscriptions when needed:**
+
 ```python
 def startOp(self) -> None:
     """OK to separate when update frequencies differ."""
@@ -924,7 +1100,7 @@ def startOp(self) -> None:
         group_alias="velocity",
         frq_divider=10  # Fast updates
     ).get().notify(self._onVelocityUpdate)
-    
+
     # Low-frequency configuration parameters (1Hz)
     self.config_sub = self.sub.subscribe(
         [
@@ -937,6 +1113,7 @@ def startOp(self) -> None:
 ```
 
 **Benefits of Grouping:**
+
 - ✅ **Reduced network overhead** - One subscription vs multiple
 - ✅ **Better performance** - Less communication with Motorcortex
 - ✅ **Simpler code** - One callback instead of many
@@ -950,6 +1127,7 @@ def startOp(self) -> None:
 **🚨 EXTREMELY IMPORTANT:** Subscription callbacks fire on **EVERY parameter tree update** (based on `frq_divider`), **NOT** when values change. If `frq_divider=10` and Motorcortex runs at 1000Hz, your callback runs **100 times per second** - even if the value never changes!
 
 **What This Means:**
+
 - Your callback executes **constantly** at high frequency
 - The value might be **identical** on every call
 - Callbacks run in a **separate thread** from your main iterate() loop
@@ -958,12 +1136,14 @@ def startOp(self) -> None:
 **Golden Rules for Callbacks:**
 
 ✅ **ONLY DO THIS in callbacks:**
+
 1. Extract value from `msg[0].value[0]`
 2. Store it in a ThreadSafeValue: `self.my_value.set(value)`
 3. (Optional) Check if changed: `if value != self.previous_value`
 4. **That's it. Nothing else.**
 
 ❌ **NEVER DO THIS in callbacks:**
+
 - ❌ Logging on every call (spams logs at 100Hz+)
 - ❌ Call `self.req.setParameter()` (network overhead every cycle!)
 - ❌ File I/O (writing to files, reading config)
@@ -975,6 +1155,7 @@ def startOp(self) -> None:
 **Callback Best Practices:**
 
 ✅ **DO - Minimal, fast callback:**
+
 ```python
 def _onVelocityUpdate(self, msg) -> None:
     """GOOD: Fast extraction and storage only."""
@@ -984,12 +1165,13 @@ def _onVelocityUpdate(self, msg) -> None:
 ```
 
 ✅ **DO - With change detection (still fast):**
+
 ```python
 def _onVelocityUpdate(self, msg) -> None:
     """GOOD: Quick check if changed, minimal logging."""
     new_velocity = msg[0].value[0]
     self.current_velocity.set(new_velocity)
-    
+
     # Only log when value actually changes (not every tree update)
     if new_velocity != self.previous_velocity:
         logging.info(f"Velocity changed: {self.previous_velocity} → {new_velocity}")
@@ -997,26 +1179,28 @@ def _onVelocityUpdate(self, msg) -> None:
 ```
 
 ❌ **DON'T - Slow operations in callback:**
+
 ```python
 def _onVelocityUpdate(self, msg) -> None:
     """BAD: This runs 100+ times per second!"""
     velocity = msg[0].value[0]
-    
+
     # ❌ Logs EVERY tree update (even if value unchanged) - log spam!
     logging.info(f"Velocity: {velocity}")
-    
+
     # ❌ Network call EVERY cycle - huge overhead!
     self.req.setParameter("root/Status/LastVelocity", velocity).get()
-    
+
     # ❌ File I/O EVERY cycle - kills performance!
     with open("velocity_log.txt", "a") as f:
         f.write(f"{velocity}\n")
-    
+
     # ❌ Complex math EVERY cycle - wastes CPU!
     safety_zone = self._calculateComplexSafetyZone(velocity)
 ```
 
 ✅ **CORRECT Pattern - Callback stores, iterate() processes:**
+
 ```python
 def __init__(self, options):
     super().__init__(options)
@@ -1031,31 +1215,440 @@ def _onVelocityUpdate(self, msg) -> None:
 def iterate(self) -> None:
     """iterate(): Do ALL the processing here. Runs at your control rate."""
     velocity = self.current_velocity.get()
-    
+
     # Do expensive operations in iterate(), not callback
     if velocity != self.previous_velocity:
         # Log changes
         logging.info(f"Velocity: {velocity}")
-        
+
         # Update parameters
         self.req.setParameter("root/Status/LastVelocity", velocity).get()
-        
+
         # Complex calculations
         safety_zone = self._calculateComplexSafetyZone(velocity)
-        
+
         # File I/O
         self._logToFile(velocity)
-        
+
         self.previous_velocity = velocity
-    
+
     self.wait(0.1)  # Control your own update rate
 ```
 
 **Summary - Callback Rules:**
+
 - **Callbacks run at HIGH FREQUENCY** (100Hz+) on EVERY tree update
 - **Keep callbacks to 3 lines max**: Extract → Store → (Maybe check if changed)
 - **Do ALL processing in iterate()**: Logging, setParameter, calculations, file I/O
 - **Remember: Tree update ≠ Value change** - Same value repeated constantly!
+
+---
+
+## Error Handler - Triggering System Errors
+
+The `McxErrorHandler` allows your client application to trigger system-level errors at different severity levels in Motorcortex. This is essential for integrating your application into the overall system safety and error management.
+
+### Overview
+
+Every `McxClientApp` instance has a built-in error handler accessible via `self.errorHandler`. The error handler:
+
+- Triggers errors at 5 different severity levels (INFO, WARNING, FORCED_DISENGAGE, SHUTDOWN, EMERGENCY_STOP)
+- Uses **subsystem IDs** to identify which service or component triggered the error
+- Uses **error codes** to describe what the error is (e.g., battery low, sensor failure, timeout)
+- Supports acknowledgment callbacks to reset your application state when errors are cleared
+
+### Error Severity Levels
+
+The error handler supports 5 severity levels (from `MotorcortexErrorLevel` enum):
+
+| Level                   | Value | Description             | System Response                |
+| ----------------------- | ----- | ----------------------- | ------------------------------ |
+| `ERROR_LEVEL_UNDEFINED` | 0     | Undefined/cleared error | Clears active errors           |
+| `INFO`                  | 1     | Information message     | No system action, just logging |
+| `WARNING`               | 2     | Warning condition       | System continues running       |
+| `FORCED_DISENGAGE`      | 3     | Graceful software stop  | Disengages system gracefully   |
+| `SHUTDOWN`              | 4     | Abrupt software stop    | Immediate software shutdown    |
+| `EMERGENCY_STOP`        | 5     | Hardware emergency stop | Software AND hardware stop     |
+
+**Severity Progression:** INFO < WARNING < FORCED_DISENGAGE < SHUTDOWN < EMERGENCY_STOP
+
+### Subsystem IDs - Identifying Error Sources
+
+**Subsystem IDs** identify which service or component triggered an error. This is critical for diagnosing issues in complex systems with multiple services.
+
+**Best Practices:**
+
+✅ **One Subsystem ID per Service:**
+
+- If your client app is a single logical service (e.g., "BatteryMonitor"), use one subsystem ID for the entire service
+- Set the subsystem ID in `startOp()` and use it for all errors in that service
+
+```python
+def startOp(self) -> None:
+    # Set subsystem ID for this service
+    self.errorHandler.set_subsystem_id(1)  # BatteryMonitor = subsystem 1
+```
+
+✅ **Multiple Subsystem IDs within a Service:**
+
+- If your service has distinct subsystems (e.g., "FleetManager" managing multiple robots), use different IDs for each
+- Pass `subsystem_id` parameter when triggering errors to distinguish between subsystems
+
+```python
+class FleetManager(McxClientApp):
+    def __init__(self, options):
+        super().__init__(options)
+        self.ROBOT_1_SUBSYSTEM = 10
+        self.ROBOT_2_SUBSYSTEM = 11
+        self.ROBOT_3_SUBSYSTEM = 12
+
+    def check_robot_1(self):
+        if battery_low:
+            # Specify which robot has the error
+            self.errorHandler.trigger_warning(
+                error_code=1001,
+                subsystem_id=self.ROBOT_1_SUBSYSTEM
+            )
+```
+
+**Subsystem ID Guidelines:**
+
+- Use **unique IDs across your entire system** to avoid conflicts
+- Document your subsystem ID allocation (e.g., 1-10 for service A, 11-20 for service B)
+- Reserve ID 0 for system-level errors (undefined subsystem)
+- Use consistent IDs - don't change them between runs
+
+### Error Codes - Describing What Happened
+
+**Error codes** describe the specific condition that triggered the error. Think of them as unique identifiers for different failure modes.
+
+**Best Practices:**
+
+✅ **Define Error Code Constants:**
+
+```python
+class BatteryMonitor(McxClientApp):
+    # Error code definitions
+    ERROR_BATTERY_LOW = 1001
+    ERROR_BATTERY_CRITICAL = 1002
+    ERROR_CHARGING_FAULT = 1003
+    ERROR_TEMPERATURE_HIGH = 1004
+    ERROR_COMMUNICATION_LOST = 1005
+
+    def check_battery(self):
+        if battery_voltage < self.CRITICAL_THRESHOLD:
+            self.errorHandler.trigger_emergency_stop(
+                error_code=self.ERROR_BATTERY_CRITICAL
+            )
+        elif battery_voltage < self.LOW_THRESHOLD:
+            self.errorHandler.trigger_warning(
+                error_code=self.ERROR_BATTERY_LOW
+            )
+```
+
+✅ **Use Meaningful Ranges:**
+
+```python
+# Organize error codes by category
+# 1000-1099: Battery errors
+# 1100-1199: Sensor errors
+# 1200-1299: Communication errors
+# 1300-1399: Motion errors
+
+ERROR_BATTERY_LOW = 1001
+ERROR_BATTERY_CRITICAL = 1002
+
+ERROR_SENSOR_FAULT = 1101
+ERROR_SENSOR_CALIBRATION = 1102
+
+ERROR_COMM_TIMEOUT = 1201
+ERROR_COMM_LOST = 1202
+```
+
+✅ **Document Error Codes:**
+
+```python
+"""
+BatteryMonitor Service - Error Codes
+
+Subsystem ID: 1
+
+Error Codes:
+- 1001: Battery voltage below warning threshold (triggers WARNING)
+- 1002: Battery voltage critical (triggers EMERGENCY_STOP)
+- 1003: Charging circuit fault detected (triggers FORCED_DISENGAGE)
+- 1004: Battery temperature too high (triggers SHUTDOWN)
+- 1005: Communication with battery management lost (triggers WARNING)
+"""
+```
+
+### Basic Usage Pattern
+
+**1. Configure Error Handler in `startOp()`:**
+
+```python
+def startOp(self) -> None:
+    """Initialize error handler with subsystem ID."""
+    # Set subsystem ID for this service
+    self.errorHandler.set_subsystem_id(1)
+
+    # Optional: Set callback for error acknowledgment
+    self.errorHandler.set_acknowledge_callback(self.on_error_acknowledged)
+
+    logging.info("Error handler configured for subsystem 1")
+```
+
+**2. Trigger Errors in Your Code:**
+
+```python
+def iterate(self) -> None:
+    """Monitor conditions and trigger appropriate errors."""
+    battery_voltage = self.get_battery_voltage()
+
+    if battery_voltage < 10.5:
+        # Critical - stop everything immediately
+        self.errorHandler.trigger_emergency_stop(error_code=1002)
+
+    elif battery_voltage < 11.0:
+        # Low battery warning
+        self.errorHandler.trigger_warning(error_code=1001)
+
+    self.wait(1.0)
+```
+
+**3. Handle Error Acknowledgment (Optional):**
+
+```python
+def on_error_acknowledged(self) -> None:
+    """Called when operator acknowledges the error."""
+    logging.info("Error acknowledged - resetting application state")
+
+    # Reset your error conditions
+    self.error_count = 0
+    self.retry_attempts = 0
+
+    # Clear any error flags
+    self.req.setParameter(
+        f"{self.options.get_service_parameter_path}/ErrorActive",
+        0
+    ).get()
+```
+
+### Complete Error Handler Example
+
+```python
+import logging
+import motorcortex
+from src.mcx_client_app import McxClientApp, McxClientAppConfiguration
+
+class SafetyMonitor(McxClientApp):
+    """
+    Monitors safety conditions and triggers appropriate errors.
+
+    Subsystem ID: 5
+    Error Codes:
+    - 2001: Temperature warning (>70°C)
+    - 2002: Temperature critical (>85°C)
+    - 2003: Pressure out of range
+    - 2004: Emergency stop button pressed
+    """
+
+    # Subsystem ID
+    SUBSYSTEM_ID = 5
+
+    # Error codes
+    ERROR_TEMP_WARNING = 2001
+    ERROR_TEMP_CRITICAL = 2002
+    ERROR_PRESSURE = 2003
+    ERROR_ESTOP = 2004
+
+    # Thresholds
+    TEMP_WARNING = 70.0
+    TEMP_CRITICAL = 85.0
+    PRESSURE_MIN = 50.0
+    PRESSURE_MAX = 150.0
+
+    def __init__(self, options: McxClientAppConfiguration):
+        super().__init__(options)
+        self.last_temp_state = "normal"
+        self.error_count = 0
+
+    def startOp(self) -> None:
+        """Configure error handler."""
+        self.errorHandler.set_subsystem_id(self.SUBSYSTEM_ID)
+        self.errorHandler.set_acknowledge_callback(self.on_error_acknowledged)
+        logging.info(f"Safety monitor configured with subsystem ID {self.SUBSYSTEM_ID}")
+
+    def iterate(self) -> None:
+        """Monitor safety parameters."""
+        # Get sensor values
+        temperature = self.req.getParameter("root/Sensors/Temperature").get().value[0]
+        pressure = self.req.getParameter("root/Sensors/Pressure").get().value[0]
+        estop = self.req.getParameter("root/Safety/EmergencyStop").get().value[0]
+
+        # Check emergency stop (highest priority)
+        if estop:
+            self.errorHandler.trigger_emergency_stop(error_code=self.ERROR_ESTOP)
+            logging.critical("Emergency stop button pressed!")
+            return
+
+        # Check temperature (rising severity)
+        if temperature > self.TEMP_CRITICAL:
+            if self.last_temp_state != "critical":
+                self.errorHandler.trigger_shutdown(error_code=self.ERROR_TEMP_CRITICAL)
+                logging.error(f"Temperature critical: {temperature}°C")
+                self.last_temp_state = "critical"
+
+        elif temperature > self.TEMP_WARNING:
+            if self.last_temp_state != "warning":
+                self.errorHandler.trigger_warning(error_code=self.ERROR_TEMP_WARNING)
+                logging.warning(f"Temperature high: {temperature}°C")
+                self.last_temp_state = "warning"
+        else:
+            self.last_temp_state = "normal"
+
+        # Check pressure
+        if pressure < self.PRESSURE_MIN or pressure > self.PRESSURE_MAX:
+            self.errorHandler.trigger_forced_disengage(error_code=self.ERROR_PRESSURE)
+            logging.error(f"Pressure out of range: {pressure} bar")
+
+        self.wait(1.0)
+
+    def on_error_acknowledged(self) -> None:
+        """Reset state when error is acknowledged."""
+        logging.info("Error acknowledged - resetting safety monitor")
+        self.last_temp_state = "normal"
+        self.error_count = 0
+
+if __name__ == "__main__":
+    config = McxClientAppConfiguration(name="SafetyMonitor")
+    config.set_config_paths(
+        deployed_config="/etc/motorcortex/config/services/services_config.json",
+        non_deployed_config="services_config.json"
+    )
+    config.load_config()
+    app = SafetyMonitor(config)
+    app.run()
+```
+
+### Advanced Patterns
+
+**Rising Edge Detection (Trigger Error Once):**
+
+```python
+def __init__(self, options):
+    super().__init__(options)
+    self.last_value = 0
+
+def iterate(self):
+    value = self.req.getParameter(f"{self.options.get_service_parameter_path}/Input").get().value[0]
+
+    # Only trigger on change (0 -> non-zero)
+    if self.last_value == 0 and value != 0:
+        if value < 10:
+            self.errorHandler.trigger_warning(error_code=3001)
+        elif value < 20:
+            self.errorHandler.trigger_forced_disengage(error_code=3002)
+
+    self.last_value = value
+    self.wait(0.5)
+```
+
+**Multi-Subsystem Service:**
+
+```python
+class MultiRobotController(McxClientApp):
+    """Controls 3 robots with separate subsystem IDs."""
+
+    ROBOT_A_SUBSYSTEM = 20
+    ROBOT_B_SUBSYSTEM = 21
+    ROBOT_C_SUBSYSTEM = 22
+
+    ERROR_COLLISION = 4001
+    ERROR_TIMEOUT = 4002
+
+    def check_robot_a(self):
+        if collision_detected:
+            self.errorHandler.trigger_emergency_stop(
+                error_code=self.ERROR_COLLISION,
+                subsystem_id=self.ROBOT_A_SUBSYSTEM  # Identify which robot
+            )
+
+    def check_robot_b(self):
+        if motion_timeout:
+            self.errorHandler.trigger_warning(
+                error_code=self.ERROR_TIMEOUT,
+                subsystem_id=self.ROBOT_B_SUBSYSTEM
+            )
+```
+
+**Clearing Errors Programmatically:**
+
+```python
+def iterate(self):
+    # Check if error condition resolved
+    if self.error_active and self.error_resolved():
+        # Clear the error by triggering ERROR_LEVEL_UNDEFINED
+        self.errorHandler.trigger_error(
+            level=MotorcortexErrorLevel.ERROR_LEVEL_UNDEFINED,
+            code=0
+        )
+        self.error_active = False
+        logging.info("Error condition resolved, error cleared")
+```
+
+### Error Handler Best Practices
+
+✅ **DO:**
+
+- Define subsystem IDs as class constants with descriptive names
+- Document all error codes in class/module docstring
+- Use error code ranges for different error categories (1000-1099: battery, 1100-1199: sensors)
+- Implement rising edge detection to avoid repeated error triggers
+- Set subsystem ID in `startOp()` for single-subsystem services
+- Use acknowledge callbacks to reset application state
+- Log when errors are triggered for debugging
+
+❌ **DON'T:**
+
+- Use random or changing subsystem IDs - they must be consistent
+- Reuse error codes for different conditions
+- Trigger errors in subscription callbacks (too fast, wrong thread)
+- Forget to document your subsystem ID and error code allocation
+- Use subsystem ID 0 unless it's truly a system-level error
+- Trigger EMERGENCY_STOP for non-critical conditions
+
+### Error Handler Reference
+
+**Available Methods:**
+
+```python
+# Configure (in startOp)
+self.errorHandler.set_subsystem_id(subsystem_id: int)
+self.errorHandler.set_acknowledge_callback(callback: Callable)
+
+# Trigger errors (in iterate or other methods)
+self.errorHandler.trigger_info(error_code: int, subsystem_id: int = None)
+self.errorHandler.trigger_warning(error_code: int, subsystem_id: int = None)
+self.errorHandler.trigger_forced_disengage(error_code: int, subsystem_id: int = None)
+self.errorHandler.trigger_shutdown(error_code: int, subsystem_id: int = None)
+self.errorHandler.trigger_emergency_stop(error_code: int, subsystem_id: int = None)
+
+# Generic trigger (advanced use)
+self.errorHandler.trigger_error(
+    level: MotorcortexErrorLevel,
+    code: int,
+    subsystem_id: int = None
+)
+```
+
+**When to Use Each Severity Level:**
+
+- **INFO**: Non-critical information (state changes, milestones reached)
+- **WARNING**: Conditions that need attention but don't stop operation (high temperature, low battery warning)
+- **FORCED_DISENGAGE**: Controlled shutdown needed (sensor fault, timeout, safe limits exceeded)
+- **SHUTDOWN**: Immediate stop required (critical sensor failure, communication lost)
+- **EMERGENCY_STOP**: Hardware safety issue (collision detected, physical emergency stop pressed)
 
 ---
 
@@ -1064,6 +1657,7 @@ def iterate(self) -> None:
 ### Rule 1: Extract Logic into Private Methods
 
 ❌ **BAD - Cluttered iterate():**
+
 ```python
 def iterate(self):
     # Long inline logic
@@ -1074,16 +1668,17 @@ def iterate(self):
     else:
         self.req.setParameter("root/Cooling/Fan", 0).get()
         logging.info("Fan deactivated")
-    
+
     pressure = self.req.getParameter("root/Sensors/Pressure").get().value[0]
     if pressure > 100:
         self.req.setParameter("root/Safety/Alarm", 1).get()
         logging.warning("Pressure alarm!")
-    
+
     self.wait(1)
 ```
 
 ✅ **GOOD - Clean iterate():**
+
 ```python
 def iterate(self):
     """Main control loop - delegates to helper methods."""
@@ -1109,6 +1704,7 @@ def _checkPressure(self) -> None:
 ### Rule 2: Use Subscriptions Instead of Polling
 
 ❌ **BAD - Polling in iterate():**
+
 ```python
 def iterate(self):
     button = self.req.getParameter("root/Buttons/Start").get().value[0]
@@ -1120,6 +1716,7 @@ def iterate(self):
 ```
 
 ✅ **GOOD - Use subscriptions:**
+
 ```python
 def startOp(self):
     """Setup subscription once."""
@@ -1145,6 +1742,7 @@ def iterate(self):
 ### Rule 3: Use State Machines for Complex Logic
 
 ✅ **GOOD - State machine pattern:**
+
 ```python
 from enum import Enum
 
@@ -1158,7 +1756,7 @@ class RobotApp(McxClientApp):
     def __init__(self, options):
         super().__init__(options)
         self.state = RobotState.IDLE
-    
+
     def iterate(self):
         """State machine - clean and readable."""
         if self.state == RobotState.IDLE:
@@ -1169,24 +1767,25 @@ class RobotApp(McxClientApp):
             self._handleExecutingState()
         elif self.state == RobotState.RETURNING:
             self._handleReturningState()
-        
+
         self.wait(0.1)
-    
+
     def _handleIdleState(self):
         if self.start_requested.get():
             self.state = RobotState.MOVING_TO_START
             logging.info("Starting operation")
-    
+
     def _handleMovingState(self):
         if self._isAtStartPosition():
             self.state = RobotState.EXECUTING
-    
+
     # ... other state handlers
 ```
 
-### Rule 4: Initialize Data in __init__, Not iterate()
+### Rule 4: Initialize Data in **init**, Not iterate()
 
 ❌ **BAD:**
+
 ```python
 def iterate(self):
     if not hasattr(self, 'counter'):
@@ -1195,6 +1794,7 @@ def iterate(self):
 ```
 
 ✅ **GOOD:**
+
 ```python
 def __init__(self, options):
     super().__init__(options)
@@ -1207,6 +1807,7 @@ def iterate(self):
 ### Rule 5: Use wait() and wait_for() Appropriately
 
 ✅ **GOOD - Responsive to stop signals:**
+
 ```python
 def iterate(self):
     self._doWork()
@@ -1270,37 +1871,34 @@ from src.mcx_client_app import McxClientApp, McxClientAppConfiguration
 
 class CounterApp(McxClientApp):
     """Increments counter when start button is active."""
-    
+
     def __init__(self, options: McxClientAppConfiguration):
         super().__init__(options)
         self.counter = 0
-    
+
     def startOp(self) -> None:
         """Initialize counter parameter."""
-        self.req.setParameter("root/Operations/Counter", 0).get()
+        self.req.setParameter(f"{self.options.get_service_parameter_path}/Counter", 0).get()
         logging.info("Counter initialized")
-    
+
     def iterate(self) -> None:
         """Increment counter every second."""
         self.counter += 1
-        self.req.setParameter("root/Operations/Counter", self.counter).get()
+        self.req.setParameter(f"{self.options.get_service_parameter_path}/Counter", self.counter).get()
         logging.info(f"Counter: {self.counter}")
         self.wait(1)
-    
+
     def onExit(self) -> None:
         """Log final count."""
         logging.info(f"Exiting. Final count: {self.counter}")
 
 if __name__ == "__main__":
-    config = McxClientAppConfiguration()
-    # Update the config paths below to match your deployment requirements
-    # deployed_config: Path used when DEPLOYED env var is set (on production systems)
-    # non_deployed_config: Path used during local development
+    config = McxClientAppConfiguration(name="CounterApp")
     config.set_config_paths(
-        deployed_config="/etc/motorcortex/config/services/counter_app.json",
-        non_deployed_config="config.json"
+        deployed_config="/etc/motorcortex/config/services/services_config.json",
+        non_deployed_config="services_config.json"
     )
-    config.start_stop_param = "root/UserParameters/services/StartButton"
+    config.load_config()
     app = CounterApp(config)
     app.run()
 ```
@@ -1309,17 +1907,18 @@ if __name__ == "__main__":
 
 ```python
 import logging
+import motorcortex
 from src.mcx_client_app import McxClientApp, McxClientAppConfiguration, ThreadSafeValue
 
 class TemperatureMonitor(McxClientApp):
     """Monitors temperature and activates alarm if threshold exceeded."""
-    
+
     def __init__(self, options: McxClientAppConfiguration):
         super().__init__(options)
         self.current_temperature = ThreadSafeValue(0.0)
         self.alarm_threshold = 75.0
         self.temp_subscription = None
-    
+
     def startOp(self) -> None:
         """Subscribe to temperature parameter."""
         self.temp_subscription = self.sub.subscribe(
@@ -1331,32 +1930,32 @@ class TemperatureMonitor(McxClientApp):
         if result and result.status == motorcortex.OK:
             self.temp_subscription.notify(self._onTemperatureUpdate)
             logging.info("Temperature subscription active")
-    
+
     def _onTemperatureUpdate(self, msg) -> None:
         """Update current temperature (runs in subscription thread)."""
         temp = msg[0].value[0]
         self.current_temperature.set(temp)
-    
+
     def iterate(self) -> None:
         """Check temperature and control alarm."""
         temp = self.current_temperature.get()
-        
+
         if temp > self.alarm_threshold:
             self._activateAlarm(temp)
         else:
             self._deactivateAlarm()
-        
+
         self.wait(2)
-    
+
     def _activateAlarm(self, temp: float) -> None:
         """Activate alarm and log warning."""
         self.req.setParameter("root/Safety/TemperatureAlarm", 1).get()
         logging.warning(f"Temperature alarm! Current: {temp}°C, Threshold: {self.alarm_threshold}°C")
-    
+
     def _deactivateAlarm(self) -> None:
         """Deactivate alarm."""
         self.req.setParameter("root/Safety/TemperatureAlarm", 0).get()
-    
+
     def onExit(self) -> None:
         """Cleanup subscriptions."""
         if self.temp_subscription:
@@ -1365,17 +1964,52 @@ class TemperatureMonitor(McxClientApp):
         logging.info("Temperature monitor stopped")
 
 if __name__ == "__main__":
-    config = McxClientAppConfiguration()
-    # Update the config paths below to match your deployment requirements
-    # deployed_config: Path used when DEPLOYED env var is set (on production systems)
-    # non_deployed_config: Path used during local development
+    config = McxClientAppConfiguration(name="TemperatureMonitor")
     config.set_config_paths(
-        deployed_config="/etc/motorcortex/config/services/temperature_monitor.json",
-        non_deployed_config="config.json"
+        deployed_config="/etc/motorcortex/config/services/services_config.json",
+        non_deployed_config="services_config.json"
     )
+    config.load_config()
     app = TemperatureMonitor(config)
     app.run()
 ```
+
+        """Check temperature and control alarm."""
+        temp = self.current_temperature.get()
+
+        if temp > self.alarm_threshold:
+            self._activateAlarm(temp)
+        else:
+            self._deactivateAlarm()
+
+        self.wait(2)
+
+    def _activateAlarm(self, temp: float) -> None:
+        """Activate alarm and log warning."""
+        self.req.setParameter("root/Safety/TemperatureAlarm", 1).get()
+        logging.warning(f"Temperature alarm! Current: {temp}°C, Threshold: {self.alarm_threshold}°C")
+
+    def _deactivateAlarm(self) -> None:
+        """Deactivate alarm."""
+        self.req.setParameter("root/Safety/TemperatureAlarm", 0).get()
+
+    def onExit(self) -> None:
+        """Cleanup subscriptions."""
+        if self.temp_subscription:
+            self.temp_subscription.unsubscribe()
+        self.req.setParameter("root/Safety/TemperatureAlarm", 0).get()
+        logging.info("Temperature monitor stopped")
+
+if **name** == "**main**":
+config = McxClientAppConfiguration() # Update the config paths below to match your deployment requirements # deployed_config: Path used when DEPLOYED env var is set (on production systems) # non_deployed_config: Path used during local development
+config.set_config_paths(
+deployed_config="/etc/motorcortex/config/services/temperature_monitor.json",
+non_deployed_config="config.json"
+)
+app = TemperatureMonitor(config)
+app.run()
+
+````
 
 ### Example 3: Robot Motion Program
 
@@ -1389,16 +2023,16 @@ from robot_control.system_defs import InterpreterStates
 
 class RobotPickPlace(McxClientApp):
     """Executes pick-and-place motion program."""
-    
+
     def __init__(self, options: McxClientAppConfiguration):
         super().__init__(options)
         self.robot = None
         self.cycle_count = 0
-    
+
     def startOp(self) -> None:
         """Initialize robot and engage."""
         self.robot = RobotCommand(self.req, self.motorcortex_types)
-        
+
         if self.robot.engage():
             logging.info("Robot engaged successfully")
             self.robot.stop()
@@ -1406,42 +2040,42 @@ class RobotPickPlace(McxClientApp):
         else:
             logging.error("Failed to engage robot")
             self.reset()  # Stop the application
-    
+
     def iterate(self) -> None:
         """Execute pick-and-place cycle."""
         self._executePickPlace()
         self.cycle_count += 1
         logging.info(f"Completed cycle {self.cycle_count}")
         self.wait(2)
-    
+
     def _executePickPlace(self) -> None:
         """Execute the pick-and-place motion program."""
         # Define waypoints
         home = Waypoint([0.4, 0.0, 0.35, 0, math.pi, 0])
         pick = Waypoint([0.5, 0.2, 0.1, 0, math.pi, 0])
         place = Waypoint([0.5, -0.2, 0.1, 0, math.pi, 0])
-        
+
         # Create motion program
         mp = MotionProgram(self.req, self.motorcortex_types)
         mp.addMoveL([home], velocity=0.3, acceleration=0.5)
         mp.addMoveL([pick], velocity=0.2, acceleration=0.3)
         mp.addMoveL([place], velocity=0.2, acceleration=0.3)
         mp.addMoveL([home], velocity=0.3, acceleration=0.5)
-        
+
         # Send and execute
         mp.send("pick_place_cycle").get()
-        
+
         state = self.robot.play()
         if state == InterpreterStates.MOTION_NOT_ALLOWED_S.value:
             logging.info("Moving to start position...")
             if self.robot.moveToStart(10):
                 self.robot.play()
-        
+
         # Wait for completion
-        self.wait_for("root/Control/fInterpreterState", 
+        self.wait_for("root/Control/fInterpreterState",
                      InterpreterStates.MOTION_COMPLETE_S.value,
                      timeout=30)
-    
+
     def onExit(self) -> None:
         """Stop and disengage robot."""
         if self.robot:
@@ -1461,9 +2095,144 @@ if __name__ == "__main__":
     config.run_during_states = [State.ENGAGED_S]  # Only run when engaged
     app = RobotPickPlace(config)
     app.run()
+````
+
+### Example 4: Error Handler with Rising Edge Detection
+
+```python
+import logging
+import motorcortex
+from src.mcx_client_app import McxClientApp, McxClientAppConfiguration
+
+class ErrorHandlerApp(McxClientApp):
+    """
+    Example demonstrating error handling with different severity levels.
+    Monitors input parameter and triggers appropriate errors based on value.
+    Uses rising edge detection to trigger errors only once per range entry.
+    """
+    def __init__(self, options: McxClientAppConfiguration):
+        super().__init__(options)
+        self.__last_value: int = 0
+
+    def startOp(self) -> None:
+        """
+        Initialize error handler with subsystem ID and acknowledge callback.
+        """
+        # Set subsystem ID (helpful to identify which subsystem the error belongs to)
+        self.errorHandler.set_subsystem_id(1)
+
+        # Set callback for error acknowledgment
+        self.errorHandler.set_acknowledge_callback(self.on_error_acknowledged)
+
+        logging.info("Error handler configured")
+
+    def on_error_acknowledged(self) -> None:
+        """
+        Callback when user acknowledges an error.
+        Reset the input parameter to clear the error condition.
+        """
+        result = self.req.setParameter(
+            f"{self.options.get_service_parameter_path}/input",
+            0
+        ).get()
+
+        if result is not None and result.status != motorcortex.OK:
+            logging.error("Failed to reset input parameter after error acknowledgment.")
+        else:
+            logging.info("Error acknowledged - input parameter reset to 0")
+
+    def iterate(self) -> None:
+        """
+        Monitor input parameter and trigger errors based on value ranges.
+        Uses rising edge detection to avoid repeated error triggers.
+        """
+        result = self.req.getParameter(
+            f"{self.options.get_service_parameter_path}/input"
+        ).get()
+
+        if result is not None and result.status == motorcortex.OK:
+            value = result.value[0]
+
+            # Rising edge detection - only trigger when value changes
+            if self.__last_value != value:
+                # Value ranges trigger different error levels
+                if 10 < value < 20:
+                    logging.info("Triggering WARNING level error.")
+                    self.errorHandler.trigger_warning(error_code=1001)
+
+                elif 20 <= value < 30:
+                    logging.info("Triggering FORCED_DISENGAGE level error.")
+                    self.errorHandler.trigger_forced_disengage(error_code=2001)
+
+                elif 30 <= value < 40:
+                    logging.info("Triggering SHUTDOWN level error.")
+                    self.errorHandler.trigger_shutdown(error_code=3001)
+
+                elif 40 <= value < 50:
+                    logging.info("Triggering EMERGENCY_STOP level error.")
+                    self.errorHandler.trigger_emergency_stop(error_code=4001)
+
+                self.__last_value = value
+
+        # Use self.wait() to keep watchdog alive
+        self.wait(0.5)
+
+    def onExit(self) -> None:
+        """
+        Cleanup on exit.
+        """
+        logging.info("Error handler app exiting")
+
+if __name__ == "__main__":
+    config = McxClientAppConfiguration(name="ErrorExample")
+    config.set_config_paths(
+        deployed_config="/etc/motorcortex/config/services/services_config.json",
+        non_deployed_config="services_config.json"
+    )
+    config.load_config()
+    app = ErrorHandlerApp(config)
+    app.run()
 ```
 
-### Example 4: Data Logger with Custom Configuration
+**services_config.json for Error Handler Example:**
+
+```json
+{
+  "Services": [
+    {
+      "Name": "ErrorExample",
+      "Enabled": true,
+      "Config": {
+        "login": "admin",
+        "password": "password",
+        "target_url": "wss://192.168.1.100",
+        "autoStart": true
+      },
+      "Parameters": {
+        "Version": "1.0",
+        "Children": [
+          {
+            "Name": "userParameters",
+            "Children": [
+              {
+                "Name": "input",
+                "Type": "int, input",
+                "Value": 0
+              }
+            ]
+          }
+        ]
+      },
+      "Watchdog": {
+        "Enabled": true,
+        "Disabled": false,
+        "high": 1000000,
+        "tooHigh": 5000000
+      }
+    }
+  ]
+}
+```
 
 ```python
 import logging
@@ -1474,8 +2243,8 @@ from src.mcx_client_app import McxClientApp, McxClientAppConfiguration, ThreadSa
 
 class DataLoggerConfiguration(McxClientAppConfiguration):
     """Configuration for data logger with custom parameters."""
-    
-    def __init__(self, log_interval: float = 1.0, 
+
+    def __init__(self, log_interval: float = 1.0,
                  log_file: str = "data_log.json",
                  parameters_to_log: list = None,
                  **kwargs):
@@ -1486,20 +2255,20 @@ class DataLoggerConfiguration(McxClientAppConfiguration):
 
 class DataLogger(McxClientApp):
     """Logs specified parameters to file at regular intervals."""
-    
+
     def __init__(self, options: DataLoggerConfiguration):
         super().__init__(options)
         self.options: DataLoggerConfiguration  # Type hint for IDE
         self.logged_data = []
         self.latest_values = ThreadSafeValue({})
         self.data_subscription = None
-    
+
     def startOp(self) -> None:
         """Subscribe to parameters to log."""
         if not self.options.parameters_to_log:
             logging.warning("No parameters configured for logging")
             return
-        
+
         self.data_subscription = self.sub.subscribe(
             self.options.parameters_to_log,
             group_alias="data_logger",
@@ -1509,14 +2278,14 @@ class DataLogger(McxClientApp):
         if result and result.status == motorcortex.OK:
             self.data_subscription.notify(self._onDataUpdate)
             logging.info(f"Logging {len(self.options.parameters_to_log)} parameters")
-    
+
     def _onDataUpdate(self, msg) -> None:
         """Update latest values from subscription."""
         data = {}
         for i, param_path in enumerate(self.options.parameters_to_log):
             data[param_path] = msg[i].value[0]
         self.latest_values.set(data)
-    
+
     def iterate(self) -> None:
         """Log current values to file."""
         values = self.latest_values.get()
@@ -1527,17 +2296,17 @@ class DataLogger(McxClientApp):
             }
             self.logged_data.append(log_entry)
             logging.debug(f"Logged: {log_entry}")
-        
+
         self.wait(self.options.log_interval)
-    
+
     def onExit(self) -> None:
         """Save logged data to file."""
         if self.data_subscription:
             self.data_subscription.unsubscribe()
-        
+
         self._saveLogFile()
         logging.info(f"Data logger stopped. {len(self.logged_data)} entries saved.")
-    
+
     def _saveLogFile(self) -> None:
         """Write logged data to JSON file."""
         try:
@@ -1573,34 +2342,408 @@ if __name__ == "__main__":
 
 ## API Reference
 
-### API Reference for `.github/stubs` Folder
+This section provides comprehensive documentation for the key APIs used in Motorcortex client applications.
 
-**ALWAYS consult the stub files for detailed type information and docstrings.**
+### Robot Control API
 
-#### Robot Control API
+#### MotionProgram
 
-Use type stubs in [stubs/robot_control/](stubs/robot_control/):
-- [motion_program.pyi](stubs/robot_control/motion_program.pyi) - Create motion programs (MoveL, MoveJ, MoveC, etc.)
-- [robot_command.pyi](stubs/robot_control/robot_command.pyi) - Robot control commands (engage, play, stop, etc.)
-- [system_defs.pyi](stubs/robot_control/system_defs.pyi) - System definitions and states
+**Purpose:** Create and send motion programs to the robot manipulator.
 
-Examples in [stubs/robot_control/examples/](stubs/robot_control/examples/)
+**Import:**
 
-#### Motorcortex Python API
+```python
+from robot_control.motion_program import MotionProgram, Waypoint
+```
 
-Use type stubs in [stubs/motorcortex/](stubs/motorcortex/):
-- [request.pyi](stubs/motorcortex/request.pyi) - Get/set parameters
-- [subscription.pyi](stubs/motorcortex/subscription.pyi) - Subscribe to parameter updates
-- [parameter_tree.pyi](stubs/motorcortex/parameter_tree.pyi) - Parameter tree structure
+**Key Classes:**
 
-Examples in [stubs/motorcortex/examples/](stubs/motorcortex/examples/)
+**`Waypoint`** - Represents a waypoint in the motion path:
 
-#### Client App Examples
+```python
+Waypoint(
+    pose: list[float],                    # Cartesian [x, y, z, rx, ry, rz] or joint angles
+    smoothing_factor: float = 0.1,        # Waypoint smoothing [0..1]
+    next_segment_velocity_factor: float = 1.0  # Segment velocity factor [0..1]
+)
+```
 
-Reference implementations in [stubs/clientApp/Examples/](stubs/clientApp/Examples/):
-- [start_button.py](stubs/clientApp/Examples/start_button.py) - Start/stop button control
-- [robot_app.py](stubs/clientApp/Examples/robot_app.py) - Robot motion application
-- [custom_button.py](stubs/clientApp/Examples/custom_button.py) - Custom button handling
+**`MotionProgram`** - Build and send motion programs:
+
+```python
+# Initialize
+mp = MotionProgram(self.req, self.motorcortex_types)
+
+# Add Linear Motion
+mp.addMoveL(
+    waypoint_list: list[Waypoint],
+    velocity: float = 0.1,              # m/s
+    acceleration: float = 0.2,          # m/s²
+    rotational_velocity: float = 3.18,  # rad/s
+    rotational_acceleration: float = 6.37  # rad/s²
+)
+
+# Add Joint Motion
+mp.addMoveJ(
+    waypoint_list: list[Waypoint],
+    rotational_velocity: float = 3.18,  # rad/s
+    rotational_acceleration: float = 6.37  # rad/s²
+)
+
+# Add Circular Motion
+mp.addMoveC(
+    waypoint_list: list[Waypoint],
+    angle: float,                       # Rotation angle in rad
+    velocity: float = 0.1,              # m/s
+    acceleration: float = 0.2           # m/s²
+)
+
+# Add Wait Command
+mp.addWait(
+    timeout_s: float,                   # Wait duration in seconds
+    path: str = None,                   # Optional parameter to wait for
+    value: float = 1                    # Value to compare
+)
+
+# Add Set Parameter Command
+mp.addSet(
+    path: str,                          # Parameter path
+    value: float | int | bool           # Value to set
+)
+
+# Send Program
+mp.send(program_name: str = "Undefined") -> motorcortex.ParameterTree
+```
+
+**Example:**
+
+```python
+import math
+from robot_control.motion_program import MotionProgram, Waypoint
+
+# Create waypoints
+home = Waypoint([0.4, 0.0, 0.35, 0, math.pi, 0])
+target = Waypoint([0.5, 0.2, 0.1, 0, math.pi, 0])
+
+# Build motion program
+mp = MotionProgram(self.req, self.motorcortex_types)
+mp.addMoveL([home, target], velocity=0.3, acceleration=0.5)
+mp.send("my_program").get()
+```
+
+#### RobotCommand
+
+**Purpose:** Control robot state machine (engage, play, stop, etc.)
+
+**Import:**
+
+```python
+from robot_control.robot_command import RobotCommand
+```
+
+**Initialize:**
+
+```python
+robot = RobotCommand(self.req, self.motorcortex_types, system_id=0)
+```
+
+**State Control Methods:**
+
+```python
+# State transitions
+robot.off() -> bool                    # Switch to Off state
+robot.disengage() -> bool              # Switch to Disengage state
+robot.engage() -> bool                 # Switch to Engage state
+robot.acknowledge(timeout_s=20.0) -> bool  # Acknowledge errors
+
+# Mode control
+robot.manualCartMode() -> bool         # Manual Cartesian motion
+robot.manualJointMode() -> bool        # Manual joint motion
+robot.semiAutoMode() -> bool           # Semi-auto mode
+
+# Motion control
+robot.moveToPoint(
+    target_joint_coord_rad: list[float],
+    v_max: float = 0.5,                # rad/s
+    a_max: float = 1.0                 # rad/s²
+) -> bool
+
+robot.moveToStart(timeout_s: float) -> bool
+
+# Program control
+robot.play(wait_time=1.0) -> InterpreterStates
+robot.pause(wait_time=1.0) -> InterpreterStates
+robot.stop(wait_time=1.0) -> InterpreterStates
+robot.reset(wait_time=1.0) -> InterpreterStates
+
+# State query
+robot.getState() -> InterpreterStates
+```
+
+**Example:**
+
+```python
+from robot_control.robot_command import RobotCommand
+from robot_control.system_defs import InterpreterStates
+
+robot = RobotCommand(self.req, self.motorcortex_types)
+
+# Engage robot
+if robot.engage():
+    logging.info("Robot engaged")
+
+# Play program
+state = robot.play()
+if state == InterpreterStates.MOTION_NOT_ALLOWED_S.value:
+    robot.moveToStart(10)
+    robot.play()
+```
+
+#### System Definitions
+
+**Purpose:** Enums for robot states, modes, and interpreter states.
+
+**Import:**
+
+```python
+from robot_control.system_defs import (
+    States, StateEvents, Modes, ModeCommands,
+    InterpreterStates, InterpreterEvents,
+    MotionGeneratorStates, FrameTypes
+)
+```
+
+**Key Enums:**
+
+**`States`** - Robot state machine states:
+
+- `OFF_S` (1), `DISENGAGED_S` (2), `ENGAGED_S` (4), `ESTOP_OFF_S` (7)
+
+**`InterpreterStates`** - Motion program interpreter states:
+
+- `PROGRAM_STOP_S` (0) - Program stopped
+- `PROGRAM_RUN_S` (1) - Program running
+- `PROGRAM_PAUSE_S` (2) - Program paused
+- `MOTION_NOT_ALLOWED_S` (3) - Motion not allowed
+- `PROGRAM_IS_DONE` (200) - Program completed
+
+**`Modes`** - Robot operation modes:
+
+- `PAUSE_M` (1), `AUTO_RUN_M` (2), `MANUAL_JOINT_MODE_M` (3), `MANUAL_CART_MODE_M` (4)
+
+**Example:**
+
+```python
+from robot_control.system_defs import InterpreterStates
+
+state = self.robot.getState()
+if state == InterpreterStates.PROGRAM_STOP_S.value:
+    logging.info("Program is stopped")
+```
+
+### Motorcortex Python API
+
+#### Request
+
+**Purpose:** Send requests to Motorcortex server (get/set parameters).
+
+**Key Methods:**
+
+```python
+# Get parameter
+req.getParameter(path: str) -> Reply
+# Returns: Reply with .value attribute
+
+# Set parameter
+req.setParameter(
+    path: str,
+    value: Any,
+    type_name: str = None
+) -> Reply
+
+# Set multiple parameters
+req.setParameterList(param_list: list[dict]) -> Reply
+# param_list format: [{"path": "...", "value": ...}, ...]
+
+# Create subscription group
+req.createGroup(
+    path_list: list[str],
+    group_alias: str,
+    frq_divider: int = 1
+) -> Reply
+```
+
+**Example:**
+
+```python
+# Get parameter
+result = self.req.getParameter("root/Sensors/Temperature").get()
+if result and result.status == motorcortex.OK:
+    temp = result.value[0]
+
+# Set parameter
+self.req.setParameter("root/Control/Speed", 0.5).get()
+```
+
+#### Subscription
+
+**Purpose:** Subscribe to real-time parameter updates.
+
+**Key Methods:**
+
+```python
+# Subscribe to parameters
+sub.subscribe(
+    path_list: list[str] | str,
+    group_alias: str,
+    frq_divider: int = 1
+) -> Subscription
+
+# Subscription object methods
+subscription.get(timeout_sec=1.0) -> StatusMsg  # Wait for subscription
+subscription.notify(callback: Callable) -> None  # Register observer
+subscription.read() -> list[Parameter]          # Read latest values
+subscription.layout() -> list[str]              # Get parameter paths
+subscription.unsubscribe() -> None              # Unsubscribe
+```
+
+**Example:**
+
+```python
+# Subscribe to parameters
+self.sensor_sub = self.sub.subscribe(
+    ["root/Sensors/Temperature", "root/Sensors/Pressure"],
+    group_alias="sensors",
+    frq_divider=100
+)
+
+result = self.sensor_sub.get()
+if result and result.status == motorcortex.OK:
+    self.sensor_sub.notify(self._onSensorUpdate)
+
+def _onSensorUpdate(self, msg):
+    temp = msg[0].value[0]
+    pressure = msg[1].value[0]
+    # Process values...
+```
+
+#### ParameterTree
+
+**Purpose:** Represents the parameter tree structure from the server.
+
+**Key Methods:**
+
+```python
+# Load parameter tree
+parameter_tree.load(parameter_tree_msg)
+
+# Get parameter info
+parameter_tree.getInfo(parameter_path: str) -> ParameterInfo
+parameter_tree.getDataType(parameter_path: str) -> DataType
+parameter_tree.getParameterTree() -> list[ParameterInfo]
+```
+
+### McxClientApp Framework
+
+#### McxClientApp
+
+**Base class for main-thread execution.**
+
+**Inherited Attributes:**
+
+```python
+self.req                # motorcortex.Request
+self.sub                # motorcortex.Subscription
+self.parameter_tree     # motorcortex.ParameterTree
+self.motorcortex_types  # motorcortex.MessageTypes
+self.options            # McxClientAppConfiguration
+self.running            # ThreadSafeValue[bool]
+self.watchdog           # McxWatchdog
+self.errorHandler       # McxErrorHandler
+```
+
+**Methods to Override:**
+
+```python
+def startOp(self) -> None:
+    """Called after connection, before iterate starts."""
+    pass
+
+def iterate(self) -> None:
+    """Main application logic (called repeatedly)."""
+    pass
+
+def onExit(self) -> None:
+    """Cleanup before disconnect."""
+    pass
+```
+
+**Inherited Methods:**
+
+```python
+self.wait(timeout: float = 30, testinterval: float = 0.2) -> bool
+self.wait_for(param: str, value: object, timeout: float = 30, operat: str = "==") -> bool
+self.reset() -> None  # Set running to False
+```
+
+#### McxClientAppConfiguration
+
+**Configuration class for client applications.**
+
+**Key Attributes:**
+
+```python
+name: str                      # Service name
+login: str                     # Authentication username
+password: str                  # Authentication password
+target_url: str                # WebSocket URL (local)
+target_url_deployed: str       # WebSocket URL (deployed)
+cert: str                      # Certificate path (local)
+cert_deployed: str             # Certificate path (deployed)
+autoStart: bool                # Auto-start on connection
+enable_watchdog: bool          # Enable watchdog
+run_during_states: list        # Allowed states for iterate()
+```
+
+**Properties:**
+
+```python
+options.get_parameter_path -> str          # "root/Services/{ServiceName}"
+options.get_service_parameter_path -> str  # "root/Services/{ServiceName}/serviceParameters"
+options.is_deployed -> bool                # True if DEPLOYED env var set
+```
+
+**Methods:**
+
+```python
+config.set_config_paths(
+    deployed_config: str,
+    non_deployed_config: str
+)
+config.load_config()  # Load from JSON
+```
+
+#### ThreadSafeValue
+
+**Thread-safe container for sharing data between threads.**
+
+```python
+from src.mcx_client_app import ThreadSafeValue
+
+value = ThreadSafeValue(initial_value)
+value.set(new_value)    # Thread-safe write
+current = value.get()   # Thread-safe read
+```
+
+### Client App Examples
+
+Reference implementations in [examples/](examples/) directory:
+
+- [examples/start_button.py](examples/start_button.py) - Start/stop button control
+- [examples/robot_app.py](examples/robot_app.py) - Robot motion application
+- [examples/custom_button.py](examples/custom_button.py) - Custom button handling with subscriptions
+- [examples/error_app.py](examples/error_app.py) - Error handler demonstration
+- [examples/datalogger.py](examples/datalogger.py) - Data logging application
 
 ---
 
@@ -1629,6 +2772,7 @@ def _onUpdate(self, msg) -> None:
 ```
 
 Use modern Python 3.9+ syntax:
+
 - `list[str]` instead of `List[str]`
 - `dict[str, int]` instead of `Dict[str, int]`
 - `str | None` instead of `Optional[str]`
@@ -1638,7 +2782,7 @@ Use modern Python 3.9+ syntax:
 Every public class and method must have a docstring:
 
 ```python
-def wait_for(self, param: str, value: object, timeout: float = 30, 
+def wait_for(self, param: str, value: object, timeout: float = 30,
              operat: str = "==") -> bool:
     """
     Wait for a parameter to meet a condition.
@@ -1660,6 +2804,7 @@ def wait_for(self, param: str, value: object, timeout: float = 30,
 ### Error Handling
 
 1. **Check return values** - Many methods return `bool` for success/failure:
+
 ```python
 if self.robot.engage():
     logging.info("Robot engaged")
@@ -1669,6 +2814,7 @@ else:
 ```
 
 2. **Use specific exceptions**:
+
 ```python
 if not isinstance(speed, float):
     raise TypeError(f"Speed must be float, got {type(speed)}")
@@ -1678,6 +2824,7 @@ if speed < 0:
 ```
 
 3. **Handle StopSignal** gracefully:
+
 ```python
 try:
     self.wait(10)
@@ -1687,6 +2834,7 @@ except StopSignal:
 ```
 
 4. **Log errors with context**:
+
 ```python
 try:
     result = self.req.setParameter(param, value).get()
@@ -1697,6 +2845,7 @@ except Exception as e:
 ### Code Structure
 
 1. **Imports at top** - Group by standard library, third-party, local:
+
 ```python
 # Standard library
 import logging
@@ -1712,28 +2861,29 @@ from robot_control.robot_command import RobotCommand
 ```
 
 2. **Class organization**:
+
 ```python
 class MyApp(McxClientApp):
     """Docstring."""
-    
+
     def __init__(self, options):
         """Initialize."""
         pass
-    
+
     # Lifecycle methods
     def startOp(self):
         pass
-    
+
     def iterate(self):
         pass
-    
+
     def onExit(self):
         pass
-    
+
     # Private helper methods (alphabetical)
     def _doSomething(self):
         pass
-    
+
     def _onCallback(self, msg):
         pass
 ```
@@ -1743,6 +2893,7 @@ class MyApp(McxClientApp):
 ### Best Practices Summary
 
 ✅ **DO:**
+
 - Use descriptive variable names (`current_temperature` not `temp`)
 - Extract logic into private helper methods
 - Use subscriptions for real-time data
@@ -1754,6 +2905,7 @@ class MyApp(McxClientApp):
 - Use `ThreadSafeValue` for shared data between threads
 
 ❌ **DON'T:**
+
 - Poll parameters in `iterate()` - use subscriptions
 - Block in subscription callbacks
 - Access `self.req` or `self.sub` before connection

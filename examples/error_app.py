@@ -111,7 +111,5 @@ if __name__ == "__main__":
     )
     client_options.load_config()
 
-    # print(f"Using configuration: {client_options}")
-
     app = ErrorMcxClientApp(client_options)
     app.run()
