@@ -29,7 +29,7 @@ class McxErrorHandler():
     """
     def __init__(self, error_folder_path: str, error_reset_parameter: str, req:TypingOptional[motorcortex.Request]=None, sub: TypingOptional[motorcortex.Subscription]=None,
                  acknowledge_callback: TypingOptional[Callable] = None, subsystem_id: TypingOptional[int]=None,
-                 enable:bool=True)-> None:
+                 enabled:bool=True)-> None:
         self.error_folder_path: str = error_folder_path
         self.error_reset_parameter: str = error_reset_parameter
         self.__req: TypingOptional[motorcortex.Request] = req
@@ -38,7 +38,7 @@ class McxErrorHandler():
         self.subsystem_id: TypingOptional[int] = subsystem_id
         self.__ack_subscription: TypingOptional[motorcortex.Subscribe] = None
 
-        self.enabled = enable
+        self.enabled = enabled
 
         self.__last_ack_value: int = 0
 
@@ -97,20 +97,7 @@ class McxErrorHandler():
             subsystem_id (int): The subsystem ID.
         """
         self.subsystem_id = subsystem_id
-
-    def stop_subscription(self) -> None:
-        """
-        Stop the acknowledge subscription.
-        """
-        if self.__ack_subscription is not None:
-            try:
-                self.__ack_subscription.unsubscribe()
-                logging.debug("Acknowledgment subscription successfully unsubscribed.")
-            except Exception as e:
-                tb = traceback.format_exc()
-                logging.error(f"Exception while unsubscribing from acknowledge parameter: {e}\nTraceback:\n{tb}")
-                raise
-
+        
     def start_subscription(self) -> None:
         """
         Start subscription to acknowledge error.

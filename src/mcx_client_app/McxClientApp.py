@@ -436,16 +436,6 @@ class McxClientApp:
         
         self.startOp()
         
-        # Initialize running state based on current conditions
-        try:
-            # Ensure it starts as disabled
-            print(f"Setting to {f"{self.options.get_parameter_path}/enableService"} to {self.options.autoStart}")
-            self.req.setParameter(f"{self.options.get_parameter_path}/enableService", int(self.options.autoStart)).get()
-        except Exception as e:
-            tb = traceback.format_exc()
-            logging.error(f"Failed to set to disable: '{f"{self.options.get_parameter_path}/enableService"}': {e}\n{tb}")
-            raise
-        
         try:
             while True:
                 try:
@@ -455,7 +445,15 @@ class McxClientApp:
 
                     # Wait for running to become True
                     while not self.running.get():
-                        self.wait(0.1, block_stop_signal=True)
+                        if self.options.autoStart:
+                            try:
+                                # Ensure it starts as disabled according to autoStart
+                                self.req.setParameter(f"{self.options.get_parameter_path}/enableService", int(self.options.autoStart)).get()
+                            except Exception as e:
+                                tb = traceback.format_exc()
+                                logging.error(f"Failed to set to disable: '{f"{self.options.get_parameter_path}/enableService"}': {e}\n{tb}")
+                                raise
+                        time.sleep(0.5)
                     
                     logging.info("Running user iterate...")
                     # Run iterate method in the main thread
@@ -555,16 +553,6 @@ class McxClientAppThread(McxClientApp):
         
         self.startOp()
         
-        # Initialize running state based on current conditions
-        try:
-            # Ensure it starts as disabled according to autoStart
-            print(f"Setting to disable: '{f'{self.options.get_parameter_path}/enableService'}' to {not self.options.autoStart}")
-            self.req.setParameter(f"{self.options.get_parameter_path}/enableService", int(not self.options.autoStart)).get()
-        except Exception as e:
-            tb = traceback.format_exc()
-            logging.error(f"Failed to set to disable: '{f"{self.options.get_parameter_path}/enableService"}': {e}\n{tb}")
-            raise
-        
         try:
             while True:
                 try:
@@ -574,7 +562,15 @@ class McxClientAppThread(McxClientApp):
 
                     # Wait for running to become True
                     while not self.running.get():
-                        time.sleep(0.1)
+                        if self.options.autoStart:
+                            try:
+                                # Ensure it starts as disabled according to autoStart
+                                self.req.setParameter(f"{self.options.get_parameter_path}/enableService", int(self.options.autoStart)).get()
+                            except Exception as e:
+                                tb = traceback.format_exc()
+                                logging.error(f"Failed to set to disable: '{f"{self.options.get_parameter_path}/enableService"}': {e}\n{tb}")
+                                raise
+                        time.sleep(0.5)
                     
                     logging.info("Running user iterate in separate thread...")
                     self.preIterate()
@@ -632,8 +628,6 @@ class McxClientAppThread(McxClientApp):
             except Exception as e:
                 tb = traceback.format_exc()
                 logging.error(f"Error during onExit: {e}\nTraceback:\n{tb}")
-            
-            self.errorHandler.stop_subscription()
 
             if self.req:
                 try: 

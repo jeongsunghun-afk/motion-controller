@@ -8,11 +8,6 @@
         "Version": "1.0",
         "Children": [
           {
-            "Name": "resetButton",
-            "Type": "bool, input",
-            "Value": 0
-          },
-          {
             "Name": "Counter",
             "Type": "int,parameter_volatile",
             "Value": 0

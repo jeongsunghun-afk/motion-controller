@@ -8,6 +8,7 @@ from .McxClientAppConfiguration import McxClientAppConfiguration
 from .state_def import StateCommand, State
 from .McxWatchdog import McxWatchdog
 from .McxErrorHandler import McxErrorHandler
+from .ChangeDetector import ChangeDetector
 
 # Version exposed at package level for convenience
 from ._version import __version__, get_version  # noqa: F401
@@ -21,6 +22,7 @@ __all__ = [
 	"StateCommand",
 	"State",
 	"McxWatchdog",
+	"ChangeDetector",
 	"__version__",
 	"get_version",
 ]

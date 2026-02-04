@@ -2723,9 +2723,178 @@ config.set_config_paths(
 config.load_config()  # Load from JSON
 ```
 
-#### ThreadSafeValue
+#### Using commandWord for External Commands
 
-**Thread-safe container for sharing data between threads.**
+**CRITICAL: commandWord is a built-in service parameter** that allows external systems (DESK tool, other services, web interfaces) to send commands to your service.
+
+**Path:** `root/Services/{ServiceName}/commandWord`
+
+**Best Practices:**
+
+✅ **DO:**
+- Use ChangeDetector with `trigger_on_zero=False` to monitor commandWord
+- Define command values clearly (1=reset, 2=pause, 3=resume, etc.)
+- Acknowledge commands by resetting commandWord to 0 after processing
+- Document command values in your class/file docstring
+- Check for changes in `iterate()`, not in subscription callback
+
+❌ **DON'T:**
+- Create custom button parameters when commandWord exists
+- Process commands in subscription callback (too fast, wrong thread)
+- Forget to reset commandWord to 0 after processing (prevents re-triggering)
+- Use `trigger_on_zero=True` for commands (will trigger on acknowledgment)
+
+**Example Pattern:**
+
+```python
+class MyService(McxClientApp):
+    """
+    My Service Application.
+    
+    Command Values (via commandWord):
+    - 1: Reset counter
+    - 2: Pause operation
+    - 3: Resume operation
+    - 4: Double speed
+    """
+    def __init__(self, options):
+        super().__init__(options)
+        self.command_detector = ChangeDetector()
+    
+    def startOp(self):
+        # Subscribe to commandWord
+        self.cmd_sub = self.sub.subscribe(
+            [f"{self.options.get_parameter_path}/commandWord"],
+            "cmd", frq_divider=10
+        ).get()
+        self.cmd_sub.notify(lambda msg: self.command_detector.set_value(msg[0].value[0]))
+    
+    def iterate(self):
+        # Check for commands (ignore changes TO zero)
+        if self.command_detector.has_changed(trigger_on_zero=False):
+            cmd = self.command_detector.get_value()
+            self._process_command(cmd)
+            # Acknowledge command
+            self.req.setParameter(
+                f"{self.options.get_parameter_path}/commandWord", 0
+            ).get()
+        
+        # Your main logic here
+        self.wait(1.0)
+    
+    def _process_command(self, cmd: int):
+        """Process commandWord values."""
+        if cmd == 1:
+            self.counter = 0
+        elif cmd == 2:
+            self.paused = True
+        elif cmd == 3:
+            self.paused = False
+        elif cmd == 4:
+            self.speed *= 2
+```
+
+**Why This Pattern Works:**
+
+1. **External control** - DESK tool or other systems can send commands by setting commandWord
+2. **No custom parameters** - Uses built-in commandWord, no need to define button parameters
+3. **Change detection** - Only processes when value actually changes (not every subscription update)
+4. **Acknowledgment** - Resetting to 0 allows same command to be sent again
+5. **Main thread processing** - Commands handled in iterate(), not subscription callback
+
+#### ChangeDetector
+
+**Thread-safe value change detector for monitoring parameter changes.**
+
+**Purpose:** Detect when a parameter value changes and check for changes in your iterate() loop. Perfect for command words, state changes, or any parameter requiring change detection. Unlike callbacks, this gives you full control over when to check and process changes.
+
+**Import:**
+
+```python
+from src.mcx_client_app.ChangeDetector import ChangeDetector
+```
+
+**Constructor:**
+
+```python
+ChangeDetector()  # No parameters needed
+```
+
+**Key Methods:**
+
+```python
+detector.set_value() -> None              # Call after updating internal value to check for changes
+detector.get_value() -> Any               # Get current value
+detector.has_changed(keep: bool = False) -> bool  # Check if value changed (clears flag unless keep=True)
+detector.reset() -> None                  # Reset internal state
+```
+
+**Complete Usage Example:**
+
+```python
+from src.mcx_client_app import McxClientApp
+from src.mcx_client_app.ChangeDetector import ChangeDetector
+import motorcortex
+
+class MyApp(McxClientApp):
+    def __init__(self, options):
+        super().__init__(options)
+        # Create detector for commandWord parameter
+        self.command_detector = ChangeDetector()
+        self.command_subscription = None
+
+    def startOp(self):
+        # Subscribe to the parameter
+        self.command_subscription = self.sub.subscribe(
+            [f"{self.options.get_parameter_path}/commandWord"],
+            "command_group",
+            frq_divider=10
+        )
+        result = self.command_subscription.get()
+        if result and result.status == motorcortex.OK:
+            self.command_subscription.notify(self._on_command_update)
+
+    def _on_command_update(self, msg):
+        """Callback for commandWord updates (runs in subscription thread)."""
+        value = msg[0].value[0]
+        # Update detector value (fast operation in subscription thread)
+        self.command_detector._ChangeDetector__value.set(value)
+        self.command_detector.set_value()
+
+    def iterate(self):
+        # Check if commandWord changed and process in main thread
+        if self.command_detector.has_changed():
+            value = self.command_detector.get_value()
+            logging.info(f"Command received: {value}")
+
+            if value == 1:
+                logging.info("Reset command received")
+                self.reset()
+            elif value == 2:
+                logging.info("Start command received")
+                self.start()
+            elif value == 3:
+                logging.info("Stop command received")
+                self.stop()
+
+        self.wait(0.1)
+```
+
+**Use Cases:**
+
+- **Command words**: Multiple command values (1=reset, 2=start, 3=stop)
+- **State monitoring**: Detect when states change
+- **Configuration changes**: React when settings are updated
+- **Multi-value inputs**: Switches with multiple positions
+
+**Important Notes:**
+
+- ✅ **Check changes in iterate()** - Use `has_changed()` to detect changes in main thread
+- ✅ **Full control** - You decide when to check and process changes
+- ✅ **Thread-safe** - Uses `ThreadSafeValue` internally for cross-thread communication
+- ✅ **Simple pattern** - Subscription updates value, iterate() checks for changes
+- ⚠️ **Subscription callback is fast** - Only updates internal value, no processing
+  **Thread-safe container for sharing data between threads.**
 
 ```python
 from src.mcx_client_app import ThreadSafeValue
