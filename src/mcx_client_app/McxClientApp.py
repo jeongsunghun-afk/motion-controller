@@ -193,7 +193,8 @@ class McxClientApp:
             error_folder_path=self.options.get_parameter_path + "/error",
             error_reset_parameter=self.options.error_reset_param,
             req=self.req,
-            sub=self.sub)
+            sub=self.sub,
+            enabled=self.options.enable_error_handler)
     
         
     def connect(self) -> None:

@@ -66,6 +66,7 @@ class McxClientAppConfiguration:
             If empty or None, the iterate() method can run in any state.
         autoStart (bool): Whether the application should start automatically upon connection or wait for `disable` to be turned off by hand (default: True).
         enable_watchdog (bool): Whether to enable the watchdog functionality (default: True).
+        enable_error_handler (bool): Whether to enable the error handler functionality (default: True).
         error_reset_param (str): Parameter path that indicates when to reset errors (default: 'root/Services/:fromState/resetErrors').
     
     Note:
@@ -90,6 +91,7 @@ class McxClientAppConfiguration:
         run_during_states: list = None,
         autoStart: bool = True,
         enable_watchdog: bool = True,
+        enable_error_handler: bool = True,
         error_reset_param: str = "root/Services/:fromState/resetErrors",
         **kwargs
     ) -> None:
@@ -105,6 +107,7 @@ class McxClientAppConfiguration:
         self._run_during_states = State.list_from(run_during_states)
         self.autoStart = autoStart
         self.enable_watchdog = enable_watchdog
+        self.enable_error_handler = enable_error_handler
         self.error_reset_param = error_reset_param
         
         self.deployed_config: str = "/etc/motorcortex/config/services/services_config.json"

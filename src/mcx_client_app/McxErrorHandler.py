@@ -28,7 +28,8 @@ class McxErrorHandler():
     Custom error handler for Motorcortex client applications.
     """
     def __init__(self, error_folder_path: str, error_reset_parameter: str, req:TypingOptional[motorcortex.Request]=None, sub: TypingOptional[motorcortex.Subscription]=None,
-                 acknowledge_callback: TypingOptional[Callable] = None, subsystem_id: TypingOptional[int]=None)-> None:
+                 acknowledge_callback: TypingOptional[Callable] = None, subsystem_id: TypingOptional[int]=None,
+                 enable:bool=True)-> None:
         self.error_folder_path: str = error_folder_path
         self.error_reset_parameter: str = error_reset_parameter
         self.__req: TypingOptional[motorcortex.Request] = req
@@ -37,7 +38,18 @@ class McxErrorHandler():
         self.subsystem_id: TypingOptional[int] = subsystem_id
         self.__ack_subscription: TypingOptional[motorcortex.Subscribe] = None
 
+        self.enabled = enable
+
         self.__last_ack_value: int = 0
+
+    def set_enabled(self, enable:bool)-> None:
+        """
+        Enable or disable the error handler.
+
+        Args:
+            enable (bool): True to enable, False to disable.
+        """
+        self.enabled = enable
 
     def set_acknowledge_callback(self, callback:Callable)-> None:
         """
@@ -103,6 +115,9 @@ class McxErrorHandler():
         """
         Start subscription to acknowledge error.
         """
+        if self.enabled is False:
+            logging.debug("Error handler is disabled; not starting acknowledgment subscription.")
+            return
         if self.__sub is not None:
             try:
                 print(f"Subscribing to acknowledge parameter: {self.error_reset_parameter}")
@@ -151,6 +166,10 @@ class McxErrorHandler():
             code (int): The error code.
             subsystem_id (int | None): The subsystem ID. If None, uses the instance's subsystem ID.
         """
+        if self.enabled is False:
+            logging.debug("Error handler is disabled; not triggering error.")
+            return
+        
         if subsystem_id is None:
             subsystem_id = self.subsystem_id
         if self.__req is not None:
