@@ -19,6 +19,7 @@ from typing import Optional, TypeVar, Generic
 import copy
 from .McxClientAppConfiguration import McxClientAppConfiguration
 from .McxWatchdog import McxWatchdog
+from .McxErrorHandler import McxErrorHandler
 import traceback
 from enum import Enum
 
@@ -187,6 +188,12 @@ class McxClientApp:
         self.statusManager = StatusManager(
             req=self.req, 
             base_path=self.options.get_parameter_path)
+        
+        self.errorHandler = McxErrorHandler(
+            error_folder_path=self.options.get_parameter_path + "/error",
+            error_reset_parameter=self.options.error_reset_param,
+            req=self.req,
+            sub=self.sub)
     
         
     def connect(self) -> None:
@@ -212,7 +219,12 @@ class McxClientApp:
             raise
 
         self.watchdog.set_request(self.req)
+        self.watchdog.setDisable(False)
+
         self.statusManager.set_request(self.req)
+
+        self.errorHandler.set_request_and_subscription(self.req, self.sub)
+        self.errorHandler.start_subscription()
 
     def wait_for(
         self,
@@ -395,7 +407,6 @@ class McxClientApp:
         Called before each iterate() call.
         Override this method to perform actions before each iteration.
         """
-        self.watchdog.setDisable(False)
         self.statusManager.set_status(ServiceStatus.RUNNING.value)
 
     def postIterate(self) -> None:
@@ -403,7 +414,6 @@ class McxClientApp:
         Called after each iterate() call.
         Override this method to perform actions after each iteration.
         """
-        self.watchdog.setDisable(True)
         self.statusManager.set_status(ServiceStatus.NOT_RUNNING.value)
 
     def run(self) -> None:
@@ -413,10 +423,9 @@ class McxClientApp:
         This method:
         1. Connects to the Motorcortex server
         2. Calls startOp() for initialization
-        3. Engages the system
-        4. Runs the iterate() method in the main thread
-        5. Monitors start/stop signals
-        6. Disengages and calls onExit() before disconnecting
+        3. Runs the iterate() method in the main thread
+        4. Monitors start/stop signals
+        5. Disengages and calls onExit() before disconnecting
         """
         
         self.connect()
@@ -429,8 +438,8 @@ class McxClientApp:
         # Initialize running state based on current conditions
         try:
             # Ensure it starts as disabled
-            print(f"Setting to disable: '{f'{self.options.get_parameter_path}/enableService'}' to {not self.options.autoStart}")
-            self.req.setParameter(f"{self.options.get_parameter_path}/enableService", int(not self.options.autoStart)).get()
+            print(f"Setting to {f"{self.options.get_parameter_path}/enableService"} to {self.options.autoStart}")
+            self.req.setParameter(f"{self.options.get_parameter_path}/enableService", int(self.options.autoStart)).get()
         except Exception as e:
             tb = traceback.format_exc()
             logging.error(f"Failed to set to disable: '{f"{self.options.get_parameter_path}/enableService"}': {e}\n{tb}")
@@ -623,10 +632,10 @@ class McxClientAppThread(McxClientApp):
                 tb = traceback.format_exc()
                 logging.error(f"Error during onExit: {e}\nTraceback:\n{tb}")
             
+            self.errorHandler.stop_subscription()
+
             if self.req:
-                try:
-                    self.watchdog.setDisable(True)
-                    logging.info("Disabling watchdog...")   
+                try: 
                     self.req.close()
                 except Exception as e:
                     tb = traceback.format_exc()

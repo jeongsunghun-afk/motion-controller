@@ -89,6 +89,31 @@
         "high": 1000000,
         "tooHigh": 5000000
       }
+    },
+    {
+      "Name": "ErrorExample",
+      "Enabled": true,
+      "Config": {
+        "login": "admin",
+        "password": "vectioneer",
+        "target_url": "wss://192.168.2.100"
+      },
+      "Parameters": {
+        "Version": "1.0",
+        "Children": [
+          {
+            "Name": "input",
+            "Type": "int, input",
+            "Value": 0
+          }
+        ]
+      },
+      "Watchdog": {
+        "Enabled": false,
+        "Disabled": true,
+        "high": 1000000,
+        "tooHigh": 5000000
+      }
     }
   ]
 }
