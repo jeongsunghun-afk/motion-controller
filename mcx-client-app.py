@@ -33,15 +33,6 @@ from pathlib import Path
 import logging
 logging.basicConfig(level=logging.INFO)
 
-# Expose package version when running the example script
-sys.path.insert(0, str(Path(__file__).parent.parent))
-try:
-    # import after path insertion
-    from src.mcx_client_app import __version__ as PACKAGE_VERSION, get_version
-except Exception:
-    PACKAGE_VERSION = "unknown"
-    def get_version():
-        return PACKAGE_VERSION
 from src.mcx_client_app import McxClientApp, McxClientAppConfiguration, ThreadSafeValue
 
 class ExampleMcxClientApp(McxClientApp):
@@ -75,7 +66,6 @@ class ExampleMcxClientApp(McxClientApp):
         pass
         
 if __name__ == "__main__":
-    logging.info(f"mcx-client-app template version: {get_version()}")
     client_options = McxClientAppConfiguration(name="mcx-client-app")
     client_options.set_config_paths(
         deployed_config="/etc/motorcortex/config/services/services_config.json",  # This is only needed when deployed on a Motorcortex controller. If only locally running, you can set it to None.
