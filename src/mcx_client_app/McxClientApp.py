@@ -448,10 +448,10 @@ class McxClientApp:
                         if self.options.autoStart:
                             try:
                                 # Ensure it starts as disabled according to autoStart
-                                self.req.setParameter(f"{self.options.get_parameter_path}/enableService", int(self.options.autoStart)).get()
+                                self.req.setParameter(self.options.get_start_button_parameter_path, int(self.options.autoStart)).get()
                             except Exception as e:
                                 tb = traceback.format_exc()
-                                logging.error(f"Failed to set to disable: '{f"{self.options.get_parameter_path}/enableService"}': {e}\n{tb}")
+                                logging.error(f"Failed to set to disable: '{self.options.get_start_button_parameter_path}': {e}\n{tb}")
                                 raise
                         time.sleep(0.5)
                     
@@ -565,10 +565,10 @@ class McxClientAppThread(McxClientApp):
                         if self.options.autoStart:
                             try:
                                 # Ensure it starts as disabled according to autoStart
-                                self.req.setParameter(f"{self.options.get_parameter_path}/enableService", int(self.options.autoStart)).get()
+                                self.req.setParameter(self.options.get_start_button_parameter_path, int(self.options.autoStart)).get()
                             except Exception as e:
                                 tb = traceback.format_exc()
-                                logging.error(f"Failed to set to disable: '{f"{self.options.get_parameter_path}/enableService"}': {e}\n{tb}")
+                                logging.error(f"Failed to set to disable: '{self.options.get_start_button_parameter_path}': {e}\n{tb}")
                                 raise
                         time.sleep(0.5)
                     

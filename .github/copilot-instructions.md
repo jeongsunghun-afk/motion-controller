@@ -2690,30 +2690,191 @@ self.reset() -> None  # Set running to False
 
 **Configuration class for client applications.**
 
-**Key Attributes:**
+**Complete Class Definition:**
 
 ```python
-name: str                      # Service name
-login: str                     # Authentication username
-password: str                  # Authentication password
-target_url: str                # WebSocket URL (local)
-target_url_deployed: str       # WebSocket URL (deployed)
-cert: str                      # Certificate path (local)
-cert_deployed: str             # Certificate path (deployed)
-autoStart: bool                # Auto-start on connection
-enable_watchdog: bool          # Enable watchdog
-run_during_states: list        # Allowed states for iterate()
+import logging
+import os
+import json
+from .state_def import State
+
+
+def load_config_json(path: str, name: str) -> dict:
+    """
+    Load and validate configuration JSON from `path`.
+
+    Args:
+        path (str): Path to the configuration JSON file.
+        name (str): Name of the service to extract configuration for.
+
+    Returns:
+        dict: Configuration dictionary for the specified service.
+    """
+    assert path is not None, "Configuration path must be provided"
+    if not os.path.exists(path):
+        raise AssertionError(f"[ERROR] Configuration file not found: {path}")
+
+    with open(path, 'r') as f:
+        data = json.load(f)
+
+    services_data = data.get("Services", [])
+    if services_data is None or type(services_data) is not list or len(services_data) == 0:
+        raise ValueError(f"[ERROR] No service data found in deployed configuration file: {path}")
+
+    matched = None
+    for service in services_data:
+        if service.get("Name", "") == name:
+            matched = service
+            break
+    else:
+        raise ValueError(f"[ERROR] No service with name '{name}' found in configuration file: {path}")
+
+    config_data = matched.get("Config", {}) if matched is not None else {}
+
+    if not isinstance(config_data, dict):
+        raise ValueError(f"[ERROR] Invalid configuration format in {path}; expected object/dict.")
+
+    return config_data
+
+
+class McxClientAppConfiguration:
+    """
+    Configuration options for McxClientApp.
+
+    Attributes:
+        name (str): Name of the client application.
+        login (str): Username for authenticating with the Motorcortex server.
+        password (str): Password for authenticating with the Motorcortex server.
+        target_url (str): Local Development WebSocket URL (e.g., 'wss://localhost').
+        target_url_deployed (str): Deployed WebSocket URL (default: 'wss://localhost').
+        cert (str): Local Development path to SSL certificate (e.g., 'mcx.cert.crt').
+        cert_deployed (str): Deployed path to SSL certificate (default: '/etc/ssl/certs/mcx.cert.pem').
+        statecmd_param (str): Parameter path for state commands (default: 'root/Logic/stateCommand').
+        state_param (str): Parameter path for current state (default: 'root/Logic/state').
+        run_during_states (list[State]|None): List of allowed states for iterate() (default None).
+        autoStart (bool): Start automatically upon connection (default: True).
+        start_button_path (str|None): Custom start button path (default: None).
+        enable_watchdog (bool): Enable watchdog functionality (default: True).
+        enable_error_handler (bool): Enable error handler functionality (default: True).
+        error_reset_param (str): Error reset parameter path (default: 'root/Services/:fromState/resetErrors').
+
+    Note:
+        When inheriting, call super().__init__(**kwargs) AFTER setting custom attributes.
+    """
+    def __init__(
+        self,
+        name: str,
+        login: str | None = None,
+        password: str | None = None,
+        target_url: str = "wss://localhost",
+        target_url_deployed: str = "wss://localhost",
+        cert: str = "mcx.cert.crt",
+        cert_deployed: str = "/etc/ssl/certs/mcx.cert.pem",
+        statecmd_param: str | None = "root/Logic/stateCommand",
+        state_param: str | None = "root/Logic/state",
+        run_during_states: list = None,
+        autoStart: bool = True,
+        start_button_path: str | None = None,
+        enable_watchdog: bool = True,
+        enable_error_handler: bool = True,
+        error_reset_param: str = "root/Services/:fromState/resetErrors",
+        **kwargs
+    ) -> None:
+        self.name = name
+        self.login = login
+        self.password = password
+        self.target_url = target_url
+        self.target_url_deployed = target_url_deployed
+        self.cert = cert
+        self.cert_deployed = cert_deployed
+        self.statecmd_param = statecmd_param
+        self.state_param = state_param
+        self._run_during_states = State.list_from(run_during_states)
+        self.autoStart = autoStart
+        self.start_button_path = start_button_path
+        self.enable_watchdog = enable_watchdog
+        self.enable_error_handler = enable_error_handler
+        self.error_reset_param = error_reset_param
+
+        self.deployed_config: str = "/etc/motorcortex/config/services/services_config.json"
+        self.non_deployed_config: str | None = None
+
+        for key, value in kwargs.items():
+            setattr(self, key, value)
+
+        self.__has_config = False
+
+    def load_config(self) -> None:
+        """Load configuration from the set config paths."""
+        if self.is_deployed:
+            config_file = self.deployed_config
+        else:
+            config_file = self.non_deployed_config
+
+        config_data = load_config_json(config_file, name=self.name)
+        for key, value in config_data.items():
+            if key == "run_during_states":
+                self._run_during_states = State.list_from(value)
+            elif hasattr(self, key):
+                setattr(self, key, value)
+
+        self.__has_config = True
+        logging.info(f"Configuration loaded from {'deployed' if self.is_deployed else 'non-deployed'} config file: {config_file}")
+
+    def set_config_paths(self, deployed_config: str | None = None, non_deployed_config: str | None = None) -> None:
+        """Set the configuration file paths for deployed and non-deployed environments."""
+        if deployed_config is not None:
+            self.deployed_config = deployed_config
+        if non_deployed_config is not None:
+            self.non_deployed_config = non_deployed_config
+
+    @property
+    def is_deployed(self) -> bool:
+        """Check if running in deployed environment (checks DEPLOYED env var)."""
+        return os.environ.get("DEPLOYED", False) is not False
+
+    @property
+    def certificate(self) -> str:
+        """Get certificate path based on deployment status."""
+        return self.cert_deployed if self.is_deployed else self.cert
+
+    @property
+    def ip_address(self) -> str:
+        """Get target URL based on deployment status."""
+        return self.target_url_deployed if self.is_deployed else self.target_url
+
+    @property
+    def get_parameter_path(self) -> str:
+        """Get parameter path root for the service."""
+        return f"root/Services/{self.name}"
+
+    @property
+    def get_service_parameter_path(self) -> str:
+        """Get service parameter path root."""
+        return f"root/Services/{self.name}/serviceParameters"
+
+    @property
+    def get_start_button_parameter_path(self) -> str:
+        """Get parameter path for start button control."""
+        if self.start_button_path is not None:
+            if "root/" in self.start_button_path:
+                return self.start_button_path
+            else:
+                return f"{self.get_parameter_path}/{self.start_button_path}"
+        return f"{self.get_parameter_path}/enableService"
 ```
 
-**Properties:**
+**Key Properties:**
 
 ```python
 options.get_parameter_path -> str          # "root/Services/{ServiceName}"
 options.get_service_parameter_path -> str  # "root/Services/{ServiceName}/serviceParameters"
 options.is_deployed -> bool                # True if DEPLOYED env var set
+options.certificate -> str                 # Cert path based on deployment
+options.ip_address -> str                  # URL based on deployment
 ```
 
-**Methods:**
+**Key Methods:**
 
 ```python
 config.set_config_paths(
@@ -2732,6 +2893,7 @@ config.load_config()  # Load from JSON
 **Best Practices:**
 
 ✅ **DO:**
+
 - Use ChangeDetector with `trigger_on_zero=False` to monitor commandWord
 - Define command values clearly (1=reset, 2=pause, 3=resume, etc.)
 - Acknowledge commands by resetting commandWord to 0 after processing
@@ -2739,6 +2901,7 @@ config.load_config()  # Load from JSON
 - Check for changes in `iterate()`, not in subscription callback
 
 ❌ **DON'T:**
+
 - Create custom button parameters when commandWord exists
 - Process commands in subscription callback (too fast, wrong thread)
 - Forget to reset commandWord to 0 after processing (prevents re-triggering)
@@ -2750,7 +2913,7 @@ config.load_config()  # Load from JSON
 class MyService(McxClientApp):
     """
     My Service Application.
-    
+
     Command Values (via commandWord):
     - 1: Reset counter
     - 2: Pause operation
@@ -2760,7 +2923,7 @@ class MyService(McxClientApp):
     def __init__(self, options):
         super().__init__(options)
         self.command_detector = ChangeDetector()
-    
+
     def startOp(self):
         # Subscribe to commandWord
         self.cmd_sub = self.sub.subscribe(
@@ -2768,7 +2931,7 @@ class MyService(McxClientApp):
             "cmd", frq_divider=10
         ).get()
         self.cmd_sub.notify(lambda msg: self.command_detector.set_value(msg[0].value[0]))
-    
+
     def iterate(self):
         # Check for commands (ignore changes TO zero)
         if self.command_detector.has_changed(trigger_on_zero=False):
@@ -2778,10 +2941,10 @@ class MyService(McxClientApp):
             self.req.setParameter(
                 f"{self.options.get_parameter_path}/commandWord", 0
             ).get()
-        
+
         # Your main logic here
         self.wait(1.0)
-    
+
     def _process_command(self, cmd: int):
         """Process commandWord values."""
         if cmd == 1:

@@ -65,6 +65,8 @@ class McxClientAppConfiguration:
             If the system is not in one of these states, the iterate() method will not execute.
             If empty or None, the iterate() method can run in any state.
         autoStart (bool): Whether the application should start automatically upon connection or wait for `disable` to be turned off by hand (default: True).
+        start_button_path (str|None): Parameter path for a start button to control auto-start behavior (default: None).
+            If set, the application will use that path for start/stop control instead of the default f"{self.get_service_path}/enableService
         enable_watchdog (bool): Whether to enable the watchdog functionality (default: True).
         enable_error_handler (bool): Whether to enable the error handler functionality (default: True).
         error_reset_param (str): Parameter path that indicates when to reset errors (default: 'root/Services/:fromState/resetErrors').
@@ -90,6 +92,7 @@ class McxClientAppConfiguration:
         state_param: str | None = "root/Logic/state",
         run_during_states: list = None,
         autoStart: bool = True,
+        start_button_path: str | None = None,
         enable_watchdog: bool = True,
         enable_error_handler: bool = True,
         error_reset_param: str = "root/Services/:fromState/resetErrors",
@@ -106,6 +109,7 @@ class McxClientAppConfiguration:
         self.state_param = state_param
         self._run_during_states = State.list_from(run_during_states)
         self.autoStart = autoStart
+        self.start_button_path = start_button_path
         self.enable_watchdog = enable_watchdog
         self.enable_error_handler = enable_error_handler
         self.error_reset_param = error_reset_param
@@ -221,3 +225,18 @@ class McxClientAppConfiguration:
     def get_service_parameter_path(self)-> str:
         """Get the parameter path root for the service"""
         return f"root/Services/{self.name}/serviceParameters"
+    
+    @property
+    def get_start_button_parameter_path(self)-> str:
+        """
+        Get the parameter path for the start button control
+        
+        When a path has been set, it will be used directly. If the path does not start with `root/`, it will be prefixed with the service parameter path.
+        If no path has been set, it defaults to f"{self.get_parameter_path}/enableService
+        """
+        if self.start_button_path is not None:
+            if "root/" in self.start_button_path:
+                return self.start_button_path
+            else:
+                return f"{self.get_parameter_path}/{self.start_button_path}"
+        return f"{self.get_parameter_path}/enableService"
