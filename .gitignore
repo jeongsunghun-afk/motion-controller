@@ -127,4 +127,4 @@ deploy_config.json
 .vscode/.motorcortex.json
 Test/
 
-# package_config.json
+package_config.json
