@@ -1,6 +1,7 @@
 {
-    "PACKAGE_NAME": "custom-config-test",
-    "PYTHON_SCRIPT": "mcx-client-app.py",
-    "PYTHON_MODULES": "src",
-    "DEBUG_ON": false
+  "PACKAGE_NAME": "custom-config-test",
+  "PYTHON_SCRIPT": "mcx-client-app.py",
+  "PYTHON_MODULES": "src",
+  "DEBUG_ON": false,
+  "DEPLOY_MODE": "container"
 }
