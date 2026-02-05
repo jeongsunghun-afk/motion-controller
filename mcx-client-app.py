@@ -55,7 +55,7 @@ class ExampleMcxClientApp(McxClientApp):
         """
         Increment counter and check for reset button press.
         """
-        print("Client app is running...")
+        logging.info("Client app is running...")
         self.wait(1)  # Wait 1 second between increments
         
     def onExit(self) -> None:
@@ -73,7 +73,7 @@ if __name__ == "__main__":
     )
     client_options.load_config()
 
-    # print(f"Using configuration: {client_options}")
+    print(f"\nUsing configuration: {client_options}\n\n")
 
     app = ExampleMcxClientApp(client_options)
     app.run()
