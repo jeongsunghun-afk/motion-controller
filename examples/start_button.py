@@ -17,6 +17,7 @@ In service_config.json, the start button is enabled with the following snippet:
     "login": "admin",
     "password": "vectioneer",
     "target_url": "wss://192.168.2.100",
+    "cert": "examples/mcx.cert.crt",
     "autoStart": false
     },
     "Watchdog": {

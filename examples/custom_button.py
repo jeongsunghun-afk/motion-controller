@@ -25,6 +25,7 @@ In `services_config.json`, the Counter parameter is defined:
     "login": "admin",
     "password": "vectioneer",
     "target_url": "wss://192.168.2.100",
+    "cert": "examples/mcx.cert.crt",
     "autoStart": true
     },
     "Watchdog": {

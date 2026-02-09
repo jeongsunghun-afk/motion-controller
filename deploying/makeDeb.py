@@ -9,6 +9,7 @@ import json
 import os
 import sys
 import shutil
+import stat
 import subprocess
 import argparse
 import tempfile
@@ -117,8 +118,8 @@ def get_config_value(key, user_config, default_config):
     return load_json_value(key, default_config)
 
 
-def run_command(cmd, cwd=None, debug_enabled=False):
-    """Execute a shell command, returning True on success."""
+def run_command(cmd, cwd=None, debug_enabled=False, show_error=False):
+    """Execute a shell command, returning (success, stdout, stderr) tuple."""
     debug_print(f"Running: {' '.join(cmd)}", debug_enabled)
     try:
         result = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, check=True)
@@ -127,10 +128,20 @@ def run_command(cmd, cwd=None, debug_enabled=False):
                 print(f"STDOUT: {result.stdout}")
             if result.stderr.strip():
                 print(f"STDERR: {result.stderr}")
-        return True
-    except (subprocess.CalledProcessError, FileNotFoundError) as e:
+        return True, result.stdout, result.stderr
+    except subprocess.CalledProcessError as e:
         debug_print(f"Command failed: {' '.join(cmd)} - {e}", debug_enabled)
-        return False
+        if show_error or debug_enabled:
+            if e.stdout and e.stdout.strip():
+                print(f"STDOUT: {e.stdout}", file=sys.stderr, flush=True)
+            if e.stderr and e.stderr.strip():
+                print(f"STDERR: {e.stderr}", file=sys.stderr, flush=True)
+        return False, e.stdout or "", e.stderr or ""
+    except FileNotFoundError as e:
+        debug_print(f"Command not found: {' '.join(cmd)} - {e}", debug_enabled)
+        if show_error or debug_enabled:
+            print(f"Error: Command not found: {cmd[0]}", file=sys.stderr, flush=True)
+        return False, "", str(e)
 
 
 def determine_python_command(python_path_arg):
@@ -178,8 +189,8 @@ def load_package_config(config_file, default_config, python_cmd):
         'service': get_config_value('SERVICE', config_file, default_config) or package_name,
         'build_folder': get_config_value('BUILDFOLDER', config_file, default_config) or 'build',
         'venv_req_dir': get_config_value('VENV_REQ_DIR', config_file, default_config) or 'wheels',
-        'venv_target_dir': get_config_value('VENV_TARGET_DIR', config_file, default_config) or f'/usr/local/.venv.{package_name}',
         'requirements_file': get_config_value('REQUIREMENTS_FILE', config_file, default_config) or None,
+        'deploy_mode': get_config_value('DEPLOY_MODE', config_file, default_config) or 'container',
         'debug_enabled': debug_enabled
     }
 
@@ -220,26 +231,34 @@ def setup_build_directory(config):
     package_dir = build_path / f"{config['package_name']}_{config['version']}"
     debian_dir = package_dir  / "DEBIAN"
     systemd_dir = package_dir / "data" / "etc" / "systemd" / "system"
-    venv_dir = package_dir / "data" / config['venv_target_dir'].lstrip('/')
+    container_dir = package_dir / "data" / "opt" / config['package_name']
 
     # Create all directories
-    for dir_path in [debian_dir, systemd_dir, venv_dir]:
+    for dir_path in [debian_dir, systemd_dir, container_dir]:
         dir_path.mkdir(parents=True, exist_ok=True)
 
-    return package_dir, debian_dir, systemd_dir, venv_dir
+    return package_dir, debian_dir, systemd_dir, container_dir
 
 
-def create_debian_metadata(config, debian_dir, systemd_dir, venv_dir, script_dir, config_file_path):
+def create_debian_metadata(config, debian_dir, systemd_dir, container_dir, script_dir, config_file_path):
     """Create Debian package metadata files."""
     debug_enabled = config['debug_enabled']
 
     # Control file
     debug_print("Creating control file", debug_enabled)
+    
+    # Set dependencies based on deployment mode
+    if config['deploy_mode'] == 'container':
+        depends = 'podman'
+    else:
+        depends = 'python3, python3-pip, python3-venv'
+    
     control_content = f"""Package: {config['package_name']}
 Version: {config['version']}
 Architecture: {config['architecture']}
 Maintainer: {config['maintainer']}
 Description: {config['description']}
+Depends: {depends}
 """
     try:
         # Ensure debian directory exists and is writable
@@ -253,7 +272,55 @@ Description: {config['description']}
 
     # Pre-install script
     debug_print("Creating preinst script", debug_enabled)
-    preinst_content = f"{determine_python_command('')} -m venv --clear --system-site-packages {config['venv_target_dir']}\n"
+    if config['deploy_mode'] == 'container':
+        preinst_content = f"""#!/bin/bash
+# Pre-install script for {config['package_name']} (container mode)
+set -e
+
+echo "Preparing for installation..."
+
+# Stop service first to ensure clean state
+if systemctl is-active --quiet {config['service']}; then
+    echo "Stopping service {config['service']}..."
+    systemctl stop {config['service']} || true
+    # Wait for service to fully stop
+    sleep 2
+fi
+
+# Force stop and remove any existing container
+if /usr/bin/podman ps -a --format "{{{{.Names}}}}" | grep -q "^{config['package_name']}-container$"; then
+    echo "Stopping existing container..."
+    /usr/bin/podman stop -t 5 {config['package_name']}-container 2>/dev/null || true
+    echo "Removing existing container..."
+    /usr/bin/podman rm -f {config['package_name']}-container 2>/dev/null || true
+    # Wait for cleanup
+    sleep 1
+fi
+
+# Remove old images (try both with and without docker.io prefix)
+for image_ref in "{config['package_name']}:{config['version']}" "docker.io/library/{config['package_name']}:{config['version']}" "localhost/{config['package_name']}:{config['version']}"; do
+    if /usr/bin/podman images --format "{{{{.Repository}}}}:{{{{.Tag}}}}" | grep -q "^${{image_ref}}$"; then
+        echo "Removing old container image: ${{image_ref}}..."
+        /usr/bin/podman rmi -f "${{image_ref}}" 2>/dev/null || true
+    fi
+done
+
+# Also remove any dangling images from this package
+/usr/bin/podman images --filter "reference={config['package_name']}:{config['version']}" --format "{{{{.ID}}}}" | while read id; do
+    if [ ! -z "$id" ]; then
+        echo "Removing image ID: $id..."
+        /usr/bin/podman rmi -f "$id" 2>/dev/null || true
+    fi
+done
+
+echo "Pre-installation cleanup complete"
+"""
+    else:
+        preinst_content = f"""#!/bin/bash
+# Pre-install script for {config['package_name']} (venv mode)
+# Stop service if running
+systemctl stop {config['service']} 2>/dev/null || true
+"""
     try:
         preinst_file = debian_dir / "preinst"
         preinst_file.write_text(preinst_content, encoding='utf-8', newline="\n")
@@ -264,13 +331,67 @@ Description: {config['description']}
 
     # Post-install script
     debug_print("Creating postinst script", debug_enabled)
-    postinst_content = f"""if [ -d "{config['venv_target_dir']}/{config['venv_req_dir']}" ]; then
-    source {config['venv_target_dir']}/bin/activate
-    sudo chown -R $USER:$USER {config['venv_target_dir']}/{config['venv_req_dir']}
-    chmod -R u+rwX {config['venv_target_dir']}/{config['venv_req_dir']}
-    pip3 install --no-index --find-links {config['venv_target_dir']}/{config['venv_req_dir']} -r {config['venv_target_dir']}/{config['venv_req_dir']}/requirements.txt > /dev/null
-    deactivate
+    if config['deploy_mode'] == 'container':
+        postinst_content = f"""#!/bin/bash
+# Post-install script for {config['package_name']} (container mode)
+set -e
+
+# Load container image
+if [ -f "/opt/{config['package_name']}/{config['package_name']}-image.tar" ]; then
+    echo "Loading container image..."
+    if /usr/bin/podman load -i /opt/{config['package_name']}/{config['package_name']}-image.tar; then
+        echo "Container image loaded successfully"
+    else
+        echo "ERROR: Failed to load container image" >&2
+        exit 1
+    fi
+else
+    echo "ERROR: Container image tar file not found at /opt/{config['package_name']}/{config['package_name']}-image.tar" >&2
+    exit 1
 fi
+
+# Verify the image exists
+echo "Verifying container image..."
+/usr/bin/podman images
+if ! /usr/bin/podman images | grep -q "{config['package_name']}.*{config['version']}"; then
+    echo "ERROR: Container image {config['package_name']}:{config['version']} not found after loading" >&2
+    echo "Available images:" >&2
+    /usr/bin/podman images >&2
+    exit 1
+fi
+
+# Reload systemd and enable service
+systemctl daemon-reload
+systemctl enable {config['service']}
+
+# Clean up the tar file after successful verification
+rm -f /opt/{config['package_name']}/{config['package_name']}-image.tar
+
+# Start the service
+systemctl start {config['service']}
+"""
+    else:
+        postinst_content = f"""#!/bin/bash
+# Post-install script for {config['package_name']} (venv mode)
+set -e
+
+cd /opt/{config['package_name']}
+
+# Create virtual environment with system site packages
+echo "Creating virtual environment with system packages..."
+python3 -m venv --system-site-packages venv
+
+# Install dependencies from wheels if available
+if [ -d "wheels" ] && [ -f "wheels/requirements.txt" ]; then
+    echo "Installing dependencies from wheels..."
+    ./venv/bin/pip install --no-index --find-links wheels --root-user-action=ignore -r wheels/requirements.txt
+fi
+
+# Set proper permissions
+chown -R admin:admin /opt/{config['package_name']}
+chmod -R 755 /opt/{config['package_name']}
+
+# Reload systemd and enable service
 systemctl daemon-reload
 systemctl enable {config['service']}
 systemctl start {config['service']}
@@ -285,9 +406,22 @@ systemctl start {config['service']}
 
     # Pre-remove script
     debug_print("Creating prerm script", debug_enabled)
-    prerm_content = f"""rm -rf {config['venv_target_dir']}
-systemctl stop {config['service']}
-systemctl disable {config['service']}
+    if config['deploy_mode'] == 'container':
+        prerm_content = f"""#!/bin/bash
+# Pre-remove script for {config['package_name']} (container mode)
+systemctl stop {config['service']} || true
+systemctl disable {config['service']} || true
+# Stop and remove container
+if /usr/bin/podman ps -a | grep -q {config['package_name']}-container; then
+    /usr/bin/podman stop {config['package_name']}-container 2>/dev/null || true
+    /usr/bin/podman rm {config['package_name']}-container 2>/dev/null || true
+fi
+"""
+    else:
+        prerm_content = f"""#!/bin/bash
+# Pre-remove script for {config['package_name']} (venv mode)
+systemctl stop {config['service']} || true
+systemctl disable {config['service']} || true
 """
     try:
         prerm_file = debian_dir / "prerm"
@@ -299,9 +433,43 @@ systemctl disable {config['service']}
 
     # Post-remove script
     debug_print("Creating postrm script", debug_enabled)
+    if config['deploy_mode'] == 'container':
+        postrm_content = f"""#!/bin/bash
+# Post-remove script for {config['package_name']} (container mode)
+
+# Only do full cleanup on purge or remove
+if [ "$1" = "purge" ] || [ "$1" = "remove" ]; then
+    echo "Cleaning up {config['package_name']}..."
+    
+    # Remove container images (try all possible references)
+    for image_ref in "{config['package_name']}:{config['version']}" "docker.io/library/{config['package_name']}:{config['version']}" "localhost/{config['package_name']}:{config['version']}"; do
+        if /usr/bin/podman images --format "{{{{.Repository}}}}:{{{{.Tag}}}}" | grep -q "^${{image_ref}}$" 2>/dev/null; then
+            echo "Removing container image: ${{image_ref}}..."
+            /usr/bin/podman rmi -f "${{image_ref}}" 2>/dev/null || true
+        fi
+    done
+    
+    # Clean up installation directory
+    if [ -d "/opt/{config['package_name']}" ]; then
+        echo "Removing installation directory..."
+        rm -rf /opt/{config['package_name']}
+    fi
+    
+    echo "Cleanup complete"
+fi
+
+# On upgrade, don't remove anything
+exit 0
+"""
+    else:
+        postrm_content = f"""#!/bin/bash
+# Post-remove script for {config['package_name']} (venv mode)
+# Clean up installation directory
+rm -rf /opt/{config['package_name']}
+"""
     try:
         postrm_path = debian_dir / "postrm"
-        postrm_path.write_text("", encoding='utf-8', newline="\n")
+        postrm_path.write_text(postrm_content, encoding='utf-8', newline="\n")
         postrm_path.chmod(0o755)
     except Exception as e:
         debug_print(f"Failed to write postrm script: {e}", debug_enabled)
@@ -321,22 +489,59 @@ systemctl disable {config['service']}
 
     template_path = Path(service_template)
     if not template_path.exists():
-        print(f"Template not found at {template_path}, checking /tmp/", flush=True)
-        # Check in /tmp for Docker builds where template is copied
-        tmp_path = Path('/tmp') / service_template
-        if tmp_path.exists():
-            template_path = tmp_path
-            debug_print(f"Found specified template in /tmp: {tmp_path}")
+        debug_print(f"Template not found at {template_path}, checking standard locations", debug_enabled)
+        # Check in standard locations for Docker builds
+        standard_locations = [
+            Path('/usr/local/bin') / service_template,
+            Path('/tmp') / service_template,
+            script_dir / service_template,
+            Path('deploying') / service_template
+        ]
+        
+        for location in standard_locations:
+            if location.exists():
+                template_path = location
+                debug_print(f"Found template at: {location}", debug_enabled)
+                break
         else:
-            print(f"Error: Specified SERVICE_TEMPLATE '{service_template}' not found in workspace or /tmp", file=sys.stderr, flush=True)
+            print(f"Error: SERVICE_TEMPLATE '{service_template}' not found in workspace or standard locations", file=sys.stderr, flush=True)
+            print(f"Searched: {[str(p) for p in standard_locations]}", file=sys.stderr, flush=True)
             sys.exit(1)
 
     if template_path.exists():
         debug_print(f"Using service template file: {template_path}")
         service_content = template_path.read_text()
-        service_content = service_content.replace('@EXEC_START@',
-            f'/bin/bash -c \'source {config["venv_target_dir"]}/bin/activate && DEPLOYED=True python3 {config["venv_target_dir"]}/{config["python_script"]}; deactivate\'')
+        service_content = service_content.replace('@PACKAGE_NAME@', config['package_name'])
+        service_content = service_content.replace('@VERSION@', config['version'])
         service_content = service_content.replace('@DESCRIPTION@', config['description'])
+        service_content = service_content.replace('@PYTHON_SCRIPT@', config['python_script'])
+        
+        # Generate deployment-mode-specific content
+        if config['deploy_mode'] == 'container':
+            # Container deployment mode
+            environment = "Environment=DEPLOYED=True"
+            exec_start_pre = f"""ExecStartPre=-/bin/sh -c '/usr/bin/podman ps -a --format "{{{{.Names}}}}" | grep -q "^{config['package_name']}-container$" && /usr/bin/podman rm -f {config['package_name']}-container || true'
+ExecStartPre=/bin/sh -c 'if ! /usr/bin/podman images | grep -q "{config['package_name']}.*{config['version']}"; then echo "ERROR: Container image {config['package_name']}:{config['version']} not found!" >&2; /usr/bin/podman images; exit 1; fi'"""
+            exec_start = f"""podman run --rm --name {config['package_name']}-container \\
+    --log-driver=none \\
+    --network=host \\
+    -v /etc/motorcortex:/etc/motorcortex:ro \\
+    -v /etc/ssl/certs:/etc/ssl/certs:ro \\
+    docker.io/library/{config['package_name']}:{config['version']} \\
+    python3 /app/{config['python_script']}"""
+            exec_stop = f"""ExecStop=/usr/bin/podman stop {config['package_name']}-container"""
+        else:
+            # Virtual environment deployment mode (default)
+            environment = "Environment=DEPLOYED=True"
+            exec_start_pre = ""
+            exec_start = f"""/opt/{config['package_name']}/venv/bin/python3 /opt/{config['package_name']}/{config['python_script']}"""
+            exec_stop = ""
+        
+        service_content = service_content.replace('@ENVIRONMENT@', environment)
+        service_content = service_content.replace('@EXEC_START_PRE@', exec_start_pre)
+        service_content = service_content.replace('@EXEC_START@', exec_start)
+        service_content = service_content.replace('@EXEC_STOP@', exec_stop)
+        
         service_file.write_text(service_content, encoding='utf-8', newline="\n")
     else:
         print(f"Error: Service template {template_path} not found", file=sys.stderr)
@@ -346,13 +551,35 @@ systemctl disable {config['service']}
 def build_python_wheels(config, python_cmd):
     """Build Python wheels from requirements file."""
     if config['requirements_file'] is None:
+        debug_print("No REQUIREMENTS_FILE specified, skipping wheel building", config['debug_enabled'])
         return
     
     req_file = Path(config['requirements_file'])
     if not req_file.exists():
+        print(f"Warning: Requirements file not found at {req_file.absolute()}", file=sys.stderr)
+        print(f"Current working directory: {Path.cwd()}", file=sys.stderr)
         return
 
+    print(f"Building Python wheels from {req_file}", flush=True)
     debug_print(f"Building Python wheels from {req_file}", config['debug_enabled'])
+    
+    # Show contents of requirements file
+    try:
+        with open(req_file, 'r') as f:
+            req_contents = f.read().strip()
+            req_lines = [line.strip() for line in req_contents.split('\n') if line.strip() and not line.strip().startswith('#')]
+            if req_lines:
+                print(f"Requirements file contains {len(req_lines)} package(s):", flush=True)
+                for line in req_lines[:5]:  # Show first 5
+                    print(f"  - {line}", flush=True)
+                if len(req_lines) > 5:
+                    print(f"  ... and {len(req_lines) - 5} more", flush=True)
+            else:
+                print("Warning: Requirements file is empty or contains only comments", flush=True)
+                return
+    except Exception as e:
+        print(f"Warning: Could not read requirements file: {e}", file=sys.stderr)
+        return
 
     wheels_dir = Path(config['venv_req_dir'])
     wheels_dir.mkdir(exist_ok=True)
@@ -361,18 +588,27 @@ def build_python_wheels(config, python_cmd):
         tmp_path = Path(tmp_dir)
 
         # Build wheels
-        if not run_command([python_cmd, '-m', 'pip', 'wheel', '-r', str(req_file), '-w', str(tmp_path)],
-                          cwd=Path.cwd(), debug_enabled=config['debug_enabled']):
-            debug_print("Warning: Failed to build wheels", config['debug_enabled'])
+        print(f"Running: {python_cmd} -m pip wheel -r {req_file}", flush=True)
+        success, stdout, stderr = run_command(
+            [python_cmd, '-m', 'pip', 'wheel', '-r', str(req_file), '-w', str(tmp_path)],
+            cwd=Path.cwd(), debug_enabled=config['debug_enabled'], show_error=True
+        )
+        if not success:
+            print("Warning: Failed to build wheels", file=sys.stderr, flush=True)
             return
 
+        # Count wheels built
+        wheel_files = list(tmp_path.glob('*.whl'))
+        print(f"Built {len(wheel_files)} wheel(s)", flush=True)
+        
         # Process each wheel
-        for whl_file in tmp_path.glob('*.whl'):
+        for whl_file in wheel_files:
             debug_print(f"Processing wheel: {whl_file.name}", config['debug_enabled'])
 
             # Try auditwheel repair, fallback to copy
-            if not run_command(['auditwheel', 'repair', str(whl_file), '-w', str(wheels_dir)],
-                              cwd=Path.cwd(), debug_enabled=config['debug_enabled']):
+            success, _, _ = run_command(['auditwheel', 'repair', str(whl_file), '-w', str(wheels_dir)],
+                                       cwd=Path.cwd(), debug_enabled=config['debug_enabled'])
+            if not success:
                 try:
                     shutil.copy2(str(whl_file), str(wheels_dir))
                 except (OSError, IOError) as e:
@@ -393,35 +629,146 @@ def build_python_wheels(config, python_cmd):
         shutil.copy2(str(req_file), str(wheels_dir / 'requirements.txt'))
     except (OSError, IOError) as e:
         debug_print(f"Warning: Failed to copy requirements file: {e}", config['debug_enabled'])
+    
+    # Set ownership to host user for wheels directory (important for Docker builds)
+    try:
+        _set_ownership_recursive(wheels_dir, config['debug_enabled'])
+    except Exception as e:
+        debug_print(f"Warning: Failed to set ownership on wheels directory: {e}", config['debug_enabled'])
 
 
-def copy_application_files(config, venv_dir):
-    """Copy Python application files to the package."""
+def copy_app_files_for_venv(config, container_dir):
+    """Copy application files for virtual environment deployment."""
     debug_enabled = config['debug_enabled']
-
-    # Copy wheels directory
-    wheels_src = Path(config['venv_req_dir'])
-    if wheels_src.exists():
-        debug_print(f"Copying wheels from {wheels_src}", debug_enabled)
-        shutil.copytree(str(wheels_src), str(venv_dir / config['venv_req_dir']), dirs_exist_ok=True)
-
+    debug_print("Copying application files for venv deployment", debug_enabled)
+    
     # Copy main Python script
     script_src = Path(config['python_script'])
     if script_src.exists():
         debug_print(f"Copying main script: {script_src}", debug_enabled)
-        shutil.copy2(str(script_src), str(venv_dir))
+        shutil.copy2(str(script_src), str(container_dir / script_src.name))
     else:
-        debug_print(f"Warning: Python script {script_src} not found", debug_enabled)
-
+        print(f"Error: Python script {script_src} not found", file=sys.stderr)
+        sys.exit(1)
+    
     # Copy Python modules
     for module in config['python_modules'].split():
         module_path = Path(module)
         if module_path.is_dir():
             debug_print(f"Copying module: {module}", debug_enabled)
-            shutil.copytree(str(module_path), str(venv_dir / module_path.name), dirs_exist_ok=True)
+            shutil.copytree(str(module_path), str(container_dir / module_path.name), dirs_exist_ok=True)
+        elif module_path.is_file():
+            debug_print(f"Copying module file: {module}", debug_enabled)
+            shutil.copy2(str(module_path), str(container_dir / module_path.name))
         else:
-            debug_print(f"Module/directory {module} not found, skipping", debug_enabled)
-            
+            print(f"Warning: Module/directory {module} not found, skipping", file=sys.stderr)
+    
+    # Copy wheels directory if it exists
+    wheels_src = Path(config['venv_req_dir'])
+    if wheels_src.exists() and wheels_src.is_dir():
+        debug_print(f"Copying wheels from {wheels_src}", debug_enabled)
+        shutil.copytree(str(wheels_src), str(container_dir / 'wheels'), dirs_exist_ok=True)
+    
+    debug_print("Application files copied successfully", debug_enabled)
+
+
+def build_container_image(config, container_dir):
+    """Build container image and export it as a tar file."""
+    debug_enabled = config['debug_enabled']
+    debug_print("Building container image", debug_enabled)
+    
+    # Detect available container runtime (prefer docker when socket is available)
+    container_cmd = None
+    
+    # Check if docker socket is available (Docker-in-Docker or Docker socket mount)
+    if os.path.exists('/var/run/docker.sock'):
+        # Prefer docker when socket is available
+        success, _, _ = run_command(['docker', '--version'], cwd=Path.cwd(), debug_enabled=False)
+        if success:
+            container_cmd = 'docker'
+            debug_print(f"Using Docker via socket mount", debug_enabled)
+    
+    # Fall back to checking both docker and podman
+    if not container_cmd:
+        for cmd in ['docker', 'podman']:
+            success, _, _ = run_command([cmd, '--version'], cwd=Path.cwd(), debug_enabled=False)
+            if success:
+                container_cmd = cmd
+                debug_print(f"Using container runtime: {cmd}", debug_enabled)
+                break
+    
+    if not container_cmd:
+        print("Error: Neither docker nor podman found", file=sys.stderr)
+        sys.exit(1)
+    
+    # Create temporary build directory
+    with tempfile.TemporaryDirectory() as build_context:
+        build_context_path = Path(build_context)
+        
+        # Copy Dockerfile
+        dockerfile_src = Path('deploying/app.Dockerfile')
+        if not dockerfile_src.exists():
+            dockerfile_src = Path('app.Dockerfile')
+        if not dockerfile_src.exists():
+            print("Error: app.Dockerfile not found", file=sys.stderr)
+            sys.exit(1)
+        
+        shutil.copy2(str(dockerfile_src), str(build_context_path / 'Dockerfile'))
+        debug_print(f"Copied Dockerfile to build context", debug_enabled)
+        
+        # Copy wheels directory
+        wheels_src = Path(config['venv_req_dir'])
+        if wheels_src.exists():
+            debug_print(f"Copying wheels from {wheels_src}", debug_enabled)
+            shutil.copytree(str(wheels_src), str(build_context_path / 'wheels'), dirs_exist_ok=True)
+        
+        # Copy main Python script
+        script_src = Path(config['python_script'])
+        if script_src.exists():
+            debug_print(f"Copying main script: {script_src}", debug_enabled)
+            shutil.copy2(str(script_src), str(build_context_path / script_src.name))
+        else:
+            debug_print(f"Warning: Python script {script_src} not found", debug_enabled)
+        
+        # Copy Python modules
+        for module in config['python_modules'].split():
+            module_path = Path(module)
+            if module_path.is_dir():
+                debug_print(f"Copying module: {module}", debug_enabled)
+                shutil.copytree(str(module_path), str(build_context_path / module_path.name), dirs_exist_ok=True)
+            else:
+                debug_print(f"Module/directory {module} not found, skipping", debug_enabled)
+        
+        # Build the image
+        image_name = f"{config['package_name']}:{config['version']}"
+        build_cmd = [container_cmd, 'build', '-t', image_name, '.']
+        
+        print(f"Building container image: {image_name}", flush=True)
+        # Always show output for container build (critical step)
+        success, _, _ = run_command(build_cmd, cwd=build_context_path, debug_enabled=True, show_error=True)
+        if not success:
+            print("Error: Failed to build container image", file=sys.stderr)
+            print(f"Build context directory: {build_context_path}", file=sys.stderr)
+            print(f"Check that app.Dockerfile and all required files are present", file=sys.stderr)
+            sys.exit(1)
+        
+        # Export the image to a tar file
+        tar_file = container_dir / f"{config['package_name']}-image.tar"
+        export_cmd = [container_cmd, 'save', '-o', str(tar_file), image_name]
+        
+        debug_print(f"Exporting image to {tar_file}", debug_enabled)
+        success, _, _ = run_command(export_cmd, cwd=Path.cwd(), debug_enabled=debug_enabled, show_error=True)
+        if not success:
+            print("Error: Failed to export container image", file=sys.stderr)
+            sys.exit(1)
+        
+        debug_print(f"Container image exported successfully to {tar_file}", debug_enabled)
+        
+        # Clean up the built image from local storage to save space
+        cleanup_cmd = [container_cmd, 'rmi', image_name]
+        run_command(cleanup_cmd, cwd=Path.cwd(), debug_enabled=debug_enabled)
+
+
 def create_debian_binary(package_dir:str, debug_enabled:bool=False) -> bool:
     """Create a text file indicating Debian binary format."""
     debug_print("Creating debian-binary file", debug_enabled)
@@ -518,9 +865,9 @@ def set_build_permissions(build_path, debug_enabled):
             pass  # Ignore permission errors on restrictive filesystems
 
 
-def finalize_permissions_and_ownership(build_folder, debug_enabled=False):
-    """Ensure build folder permissions and set ownership to host user if possible.
-
+def _set_ownership_recursive(target_path, debug_enabled=False):
+    """Set ownership recursively for a given path to host user.
+    
     This tries, in order:
     - Use HOST_UID / HOST_GID environment variables (set by Docker run)
     - Use SUDO_UID / SUDO_GID if running under sudo
@@ -533,7 +880,10 @@ def finalize_permissions_and_ownership(build_folder, debug_enabled=False):
             return
 
         # Resolve absolute path
-        build_path = Path(build_folder).resolve()
+        target = Path(target_path).resolve()
+        
+        if not target.exists():
+            return
 
         # Determine target uid/gid
         host_uid = os.environ.get('HOST_UID')
@@ -551,10 +901,10 @@ def finalize_permissions_and_ownership(build_folder, debug_enabled=False):
                 uid = os.getuid()
                 gid = os.getgid()
 
-        debug_print(f"Setting ownership to {uid}:{gid} for {build_path}", debug_enabled)
+        debug_print(f"Setting ownership to {uid}:{gid} for {target}", debug_enabled)
 
         # Walk and chown
-        for root, dirs, files in os.walk(str(build_path)):
+        for root, dirs, files in os.walk(str(target)):
             for d in dirs:
                 try:
                     os.chown(os.path.join(root, d), uid, gid)
@@ -567,12 +917,24 @@ def finalize_permissions_and_ownership(build_folder, debug_enabled=False):
                     pass
 
         try:
-            os.chown(str(build_path), uid, gid)
+            os.chown(str(target), uid, gid)
         except Exception:
             pass
 
     except Exception as e:
-        debug_print(f'Failed to finalize ownership/permissions: {e}', debug_enabled)
+        debug_print(f'Failed to set ownership for {target_path}: {e}', debug_enabled)
+
+
+def finalize_permissions_and_ownership(build_folder, debug_enabled=False):
+    """Ensure build folder permissions and set ownership to host user if possible.
+
+    This tries, in order:
+    - Use HOST_UID / HOST_GID environment variables (set by Docker run)
+    - Use SUDO_UID / SUDO_GID if running under sudo
+    - Fallback to current process uid/gid
+    Skips ownership changes on Windows.
+    """
+    _set_ownership_recursive(build_folder, debug_enabled)
 
 
 def main():
@@ -606,16 +968,21 @@ def main():
             print(f"  {key.upper()}: {value}", flush=True)
 
     # Setup build directory
-    package_dir, debian_dir, systemd_dir, venv_dir = setup_build_directory(config)
+    package_dir, debian_dir, systemd_dir, container_dir = setup_build_directory(config)
 
     # Create Debian metadata
-    create_debian_metadata(config, debian_dir, systemd_dir, venv_dir, script_dir, str(config_file))
+    create_debian_metadata(config, debian_dir, systemd_dir, container_dir, script_dir, str(config_file))
 
     # Build Python wheels
     build_python_wheels(config, python_cmd)
 
-    # Copy application files
-    copy_application_files(config, venv_dir)
+    # Build container image or copy app files based on deployment mode
+    if config['deploy_mode'] == 'container':
+        print("Building container image for container deployment...", flush=True)
+        build_container_image(config, container_dir)
+    else:
+        print("Copying application files for venv deployment...", flush=True)
+        copy_app_files_for_venv(config, container_dir)
 
     # Build the final package
     build_debian_package(package_dir, config)

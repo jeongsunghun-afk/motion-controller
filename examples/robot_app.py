@@ -5,18 +5,21 @@ Make sure to have the Motorcortex Anthropomorphic Robot application running and 
 
 Start up the robot in the GUI.
 
+For this example, the python package 'motorcortex-robot-control-python' is used. You can install it with: `pip install motorcortex-robot-control-python`
 
 This example demonstrates how to move the robot left and right using a simple client application.
 
-In service_config.json, the robot app is added with the following snippet:s
+In service_config.json, the robot app is added with the following snippet:
+
 ```json
 {
-    "Name": "StartButtonExample",
+    "Name": "RobotAppExample",
     "Enabled": true,
     "Config": {
     "login": "admin",
     "password": "vectioneer",
     "target_url": "wss://192.168.2.100",
+    "cert": "examples/mcx.cert.crt",
     "autoStart": true
     },
     "Watchdog": {

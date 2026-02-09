@@ -14,7 +14,8 @@ Add the following json snippet to your Motorcortex service configuration file an
     "Config": {
     "login": "admin",
     "password": "vectioneer",
-    "target_url": "wss://192.168.2.100"
+    "target_url": "wss://192.168.2.100",
+    "cert": "examples/mcx.cert.crt",
     },
     "Parameters": {
     "Version": "1.0",
