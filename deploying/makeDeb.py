@@ -190,7 +190,7 @@ def load_package_config(config_file, default_config, python_cmd):
         'build_folder': get_config_value('BUILDFOLDER', config_file, default_config) or 'build',
         'venv_req_dir': get_config_value('VENV_REQ_DIR', config_file, default_config) or 'wheels',
         'requirements_file': get_config_value('REQUIREMENTS_FILE', config_file, default_config) or None,
-        'deploy_mode': get_config_value('DEPLOY_MODE', config_file, default_config) or 'container',
+        'deploy_mode': get_config_value('DEPLOY_MODE', config_file, default_config) or 'venv',
         'debug_enabled': debug_enabled
     }
 

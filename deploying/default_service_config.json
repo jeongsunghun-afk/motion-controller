@@ -1,0 +1,9 @@
+{
+    "VERSION": "1.0",
+    "ARCHITECTURE": "all",
+    "MAINTAINER": "Vectioneer B.V. <info@vectioneer.com>",
+    "DESCRIPTION": "A client application for getting and setting data in a Motorcortex Control Application",
+    "BUILDFOLDER": "build",
+    "VENV_REQ_DIR": "venv-req",
+    "REQUIREMENTS_FILE": "requirements.txt"
+}
