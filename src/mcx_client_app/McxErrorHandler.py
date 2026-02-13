@@ -156,25 +156,41 @@ class McxErrorHandler():
         if self.enabled is False:
             logging.debug("Error handler is disabled; not triggering error.")
             return
-        
+
         if subsystem_id is None:
             subsystem_id = self.subsystem_id
         if self.__req is not None:
-            resultLevel = self.__req.setParameter(f"{self.error_folder_path}/triggerErrorWithLevel", level.value).get()
-            resultCode = self.__req.setParameter(f"{self.error_folder_path}/serviceErrorCode", code).get()
+            # Prepare parameter list: code, subsystem (if any), then trigger last
+            param_list = [
+                {"path": f"{self.error_folder_path}/serviceErrorCode", "value": code}
+            ]
             if subsystem_id is not None:
-                resultSubsystem = self.__req.setParameter(f"{self.error_folder_path}/serviceErrorSubsystem", subsystem_id).get()
+                param_list.append({"path": f"{self.error_folder_path}/serviceErrorSubsystem", "value": subsystem_id})
+            param_list.append({"path": f"{self.error_folder_path}/triggerErrorWithLevel", "value": level.value})
 
-            if resultLevel is not None and resultLevel.status == motorcortex.OK:
+            results = self.__req.setParameterList(param_list).get()
+
+            # Handle both list and single StatusMsg return
+            if isinstance(results, list):
+                # Results is a list of reply objects in the same order as param_list
+                resultLevel = results[-1] if len(results) == len(param_list) else None
+                resultCode = results[0] if len(results) >= 1 else None
+                resultSubsystem = results[1] if subsystem_id is not None and len(results) > 2 else None
+            else:
+                # Only one parameter, results is a single StatusMsg
+                resultLevel = results
+                resultCode = results
+                resultSubsystem = results if subsystem_id is not None else None
+
+            if resultLevel is not None and getattr(resultLevel, 'status', None) == motorcortex.OK:
                 logging.info(f"Triggered error level: {level.name} ({level.value})")
             else:
                 logging.error(f"Failed to trigger error level: {level.name} ({level.value})")
-            if resultCode is not None and resultCode.status != motorcortex.OK:
+            if resultCode is not None and getattr(resultCode, 'status', None) != motorcortex.OK:
                 logging.error(f"Failed to set error code: {code}")
             if subsystem_id is not None:
-                if resultSubsystem is not None and resultSubsystem.status != motorcortex.OK:
+                if resultSubsystem is not None and getattr(resultSubsystem, 'status', None) != motorcortex.OK:
                     logging.error(f"Failed to set error subsystem ID: {subsystem_id}")
-            
         else:
             raise RuntimeError("Motorcortex Request object is not set. Cannot trigger error.")
         
