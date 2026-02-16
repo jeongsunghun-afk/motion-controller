@@ -375,7 +375,21 @@ systemctl start {config['service']}
 # Post-install script for {config['package_name']} (venv mode)
 set -e
 
+# Ensure directory exists and verify installation
+if [ ! -d "/opt/{config['package_name']}" ]; then
+    echo "ERROR: Installation directory /opt/{config['package_name']} does not exist" >&2
+    echo "Package may not have unpacked correctly" >&2
+    exit 1
+fi
+
 cd /opt/{config['package_name']}
+
+# Verify main script exists
+if [ ! -f "{config['python_script']}" ]; then
+    echo "ERROR: Main script {config['python_script']} not found in /opt/{config['package_name']}" >&2
+    echo "Package installation incomplete" >&2
+    exit 1
+fi
 
 # Create virtual environment with system site packages
 echo "Creating virtual environment with system packages..."
@@ -464,8 +478,20 @@ exit 0
     else:
         postrm_content = f"""#!/bin/bash
 # Post-remove script for {config['package_name']} (venv mode)
-# Clean up installation directory
-rm -rf /opt/{config['package_name']}
+
+# Only do full cleanup on purge or remove
+if [ "$1" = "purge" ] || [ "$1" = "remove" ]; then
+    echo "Cleaning up {config['package_name']}..."
+    # Clean up installation directory
+    if [ -d "/opt/{config['package_name']}" ]; then
+        echo "Removing installation directory..."
+        rm -rf /opt/{config['package_name']}
+    fi
+    echo "Cleanup complete"
+fi
+
+# On upgrade, don't remove anything
+exit 0
 """
     try:
         postrm_path = debian_dir / "postrm"
