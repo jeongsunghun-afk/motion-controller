@@ -107,6 +107,7 @@ class StatusManager:
         self.req = req
         self.base_path = base_path
         self.__status: ThreadSafeValue[ServiceStatus] = ThreadSafeValue(ServiceStatus.NOT_RUNNING)
+        self.__enabled: bool = True
 
     def set_request(self, req: motorcortex.Request) -> None:
         """
@@ -117,6 +118,15 @@ class StatusManager:
         """
         self.req = req
 
+    def set_enabled(self, enable: bool) -> None:
+        """
+        Enable or disable status updates to Motorcortex.
+
+        When disabled, calls to `set_status` will update the local status
+        but will not attempt to write the parameter to the target.
+        """
+        self.__enabled = bool(enable)
+
     def set_status(self, value: int) -> None:
         """
         Set a status parameter value.
@@ -124,7 +134,12 @@ class StatusManager:
         Args:
             value (int): Value to set.
         """
-        if (self.req is None):
+        if (self.req is None) or (not getattr(self, '_StatusManager__enabled', True)):
+            # Still update local value, but skip network writes when disabled
+            try:
+                self.__status.set(ServiceStatus(value))
+            except Exception:
+                pass
             return
         try:
             status = ServiceStatus(value)
@@ -181,6 +196,8 @@ class McxClientApp:
         # layout of the last control subscription (list of param paths)
         self._control_params: list[str] = []
 
+        self.service_registered = False
+
         self.watchdog: McxWatchdog = McxWatchdog(
             watchdog_folder_path=f"{self.options.get_parameter_path}/watchdog", 
             enabled = self.options.enable_watchdog)
@@ -219,13 +236,43 @@ class McxClientApp:
             logging.error(f"Failed to connect to {self.options.ip_address}. Exiting. Error: {e}\nTraceback:\n{tb}")
             raise
 
-        self.watchdog.set_request(self.req)
-        self.watchdog.setDisable(False)
+        parameter_reply = self.req.getParameterTree().get()
+        for parameter in parameter_reply.params:
+            if self.options.get_parameter_path in parameter.path:
+                self.service_registered = True
+                break
 
-        self.statusManager.set_request(self.req)
+        if self.service_registered:
+            self.watchdog.set_request(self.req)
+            self.watchdog.setDisable(False)
 
-        self.errorHandler.set_request_and_subscription(self.req, self.sub)
-        self.errorHandler.start_subscription()
+            self.statusManager.set_request(self.req)
+
+            self.errorHandler.set_request_and_subscription(self.req, self.sub)
+            self.errorHandler.start_subscription()
+        else:
+            logging.error(f"""Service '{self.options.name}' was not registered by Motorcortex. 
+                          
+Make Sure you add the service configuration to 'services_config.json' and or update Motorcortex-robot to 3.14.0+. Older versions, while they function, are not proven to be robust.\n
+Will continue without:
+    -Watchdog
+    -ErrorHandler
+    -StatusManager\n\n""")
+            # Disable features that rely on a registered service
+            try:
+                self.watchdog.setEnable(False)
+            except Exception:
+                logging.debug("Failed to disable watchdog via setEnable()")
+            try:
+                # StatusManager: stop attempts to write status parameters
+                self.statusManager.set_enabled(False)
+            except Exception:
+                logging.debug("Failed to disable StatusManager")
+            try:
+                # Error handler: disable error handling and subscriptions
+                self.errorHandler.set_enabled(False)
+            except Exception:
+                logging.debug("Failed to disable ErrorHandler")
 
     def wait_for(
         self,
@@ -328,7 +375,7 @@ class McxClientApp:
 
         result: dict = map_subscription_reply(msg, self._control_params)
 
-        isEnabled: bool = bool(result.get(f"{self.options.get_parameter_path}/enableService", [0])[0])
+        isEnabled: bool = bool(result.get(self.options.get_start_button_parameter_path, [0])[0])
 
         # Extract the scalar current state value safely (subscription returns a list/tuple)
         current_state = None
@@ -356,7 +403,18 @@ class McxClientApp:
         """
         self._control_params: list[str] = []
 
-        self._control_params.append(f"{self.options.get_parameter_path}/enableService")
+        parameter_reply = self.req.getParameterTree().get()
+        for parameter in parameter_reply.params:
+            if self.options.get_start_button_parameter_path in parameter.path:
+                self._control_params.append(self.options.get_start_button_parameter_path)
+                break
+        
+        if self._control_params == []:
+            if self.service_registered:
+                logging.error("Start Button not found, so auto starting! Make sure your path is correct!")
+            else:
+                logging.error("Start Button not found, so auto starting! As service is not registered you need to set 'start_button_path' in the config for it to function correctly\n")
+            self.running.set(True)
 
         if self.options.allowed_states:
             self._control_params.append(self.options.state_param)

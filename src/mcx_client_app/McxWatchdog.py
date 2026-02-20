@@ -75,6 +75,17 @@ class McxWatchdog:
 
         logging.error("Failed to set watchdog param %s to %s: %s", full_path, value, result)
         return False
+    
+    def setEnable(self, value: bool)->bool:
+        """
+        Enables or disables the watchdog.
+        Args:
+            value (bool): If True, enables the watchdog; if False, disables it.
+        Returns:
+            bool: The new enabled state.
+        """
+
+        self.__enabled = value
 
     def setDisable(self, value: bool) -> bool:
         """Enable or disable the watchdog via the `disable` parameter.
