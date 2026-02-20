@@ -6,7 +6,7 @@
 
 This template provides a ready-to-use structure for creating Python applications that interact with Motorcortex servers. MCX-Client-Apps connect to a Motorcortex control system via WebSocket to monitor parameters, control robots, automate workflows, and integrate with external systems. The template includes everything needed to develop, test, and deploy your application as a Debian package compatible with MCX-RTOS.
 
-> **Warning**: Older Motorcortex-robot versions (pre-3.14.0) do not create a `services` folder in the Motorcortex data tree with serviceParameters, Watchdog and Errorhandling. The client template can still be used, but add your serviceParameter to the userParameters (.conf/config/userparameters.json). Errorhandler & Watchdog are only possible with updated Motorcortex-robot. 
+> **Warning**: Older Motorcortex-robot versions (pre-3.14.0) do not create a `services` folder in the Motorcortex data tree with serviceParameters, Watchdog and Errorhandling. The client template can still be used, but add your serviceParameter to the userParameters (.conf/config/userparameters.json). Errorhandler & Watchdog are only possible with updated Motorcortex-robot.
 
 ## Quick Start
 
@@ -21,7 +21,7 @@ This template provides a ready-to-use structure for creating Python applications
 MCX-Client-Apps interact with the **Motorcortex parameter tree** - a hierarchical structure containing system parameters. Your app can:
 
 - **Read parameters** with `self.req.getParameter()`
-- **Write parameters** with `self.req.setParameter()`  
+- **Write parameters** with `self.req.setParameter()`
 - **Subscribe for real-time updates** with `self.sub.subscribe()`
 
 All custom service parameters are automatically placed under `root/Services/{ServiceName}/serviceParameters/` when defined in your service configuration.
@@ -69,6 +69,7 @@ This file defines your service(s) with connection settings, parameters, and beha
         "login": "admin",
         "password": "your_password",
         "target_url": "wss://192.168.1.100",
+        "cert": "mcx.cert.crt",
         "autoStart": true
       },
       "Parameters": {
@@ -103,18 +104,21 @@ This file defines your service(s) with connection settings, parameters, and beha
 ```
 
 **Key Fields:**
+
 - `Name`: Service name (used in parameter tree as `root/Services/{Name}`)
 - `Config`: Runtime configuration (login, password, target_url, autoStart, custom fields)
 - `Parameters`: Service-specific parameters (automatically placed under `root/Services/{Name}/serviceParameters/`)
 - `Watchdog`: Watchdog settings (enabled, thresholds in microseconds)
 
 **Parameter Types:**
+
 - `input`: Client writes, Target reads (buttons, commands)
 - `output`: Target writes, client reads (sensor data, status)
 - `parameter`: Configuration values
 - `parameter_volatile`: **Recommended for client outputs** - frequently changing values written by client
 
 **Important:** Access service parameters via `self.options.get_service_parameter_path`:
+
 ```python
 button = self.req.getParameter(f"{self.options.get_service_parameter_path}/StartButton").get().value[0]
 ```
@@ -134,6 +138,7 @@ This file controls how your Debian package is built:
 ```
 
 **CRITICAL:** When renaming files or changing structure, update this configuration:
+
 - Rename `mcx-client-app.py` → Update `PYTHON_SCRIPT`
 - Change package name → Update `PACKAGE_NAME`
 
@@ -162,7 +167,7 @@ class MyApp(McxClientApp):
         super().__init__(options)
         # Initialize instance variables
         self.counter = 0
-    
+
     def startOp(self):
         """Called after connection, before iterate starts"""
         # Setup subscriptions, initialize parameters
@@ -173,7 +178,7 @@ class MyApp(McxClientApp):
         """Main application logic - called repeatedly"""
         self.counter += 1
         logging.info(f"Iteration {self.counter}")
-        
+
         # ✅ CRITICAL: Use self.wait() to keep watchdog alive!
         self.wait(1.0)  # Wait with stop signal support
 
@@ -193,6 +198,7 @@ if __name__ == "__main__":
 ```
 
 **Lifecycle Methods:**
+
 1. `__init__()` - Initialize instance variables
 2. `startOp()` - Setup after connection (subscriptions, parameters)
 3. `iterate()` - Main logic (called repeatedly while running)
@@ -206,12 +212,13 @@ if __name__ == "__main__":
 - **Configuration** (`Config` section): Values **set once at startup** (connection settings, constants)
 
 **Example:**
+
 ```python
 # Runtime-adjustable parameter (defined in Parameters section)
 {"Name": "MaxSpeed", "Type": "double, input"}
 # Access: self.req.getParameter(f"{self.options.get_service_parameter_path}/MaxSpeed")
 
-# Static configuration (defined in Config section)  
+# Static configuration (defined in Config section)
 {"max_retries": 3, "connection_timeout": 30}
 # Access: self.options.max_retries
 ```
@@ -298,6 +305,7 @@ python3 examples/robot_app.py
 ```
 
 The application will:
+
 1. Load configuration from `services_config.json`
 2. Connect to the Motorcortex server
 3. Wait for `autoStart: true` or manual enable via `enableService` parameter
@@ -331,39 +339,46 @@ The resulting `.deb` file will be in the `build/` folder.
 ## Key Features
 
 ### Connection Management
+
 - Automatic connection to Motorcortex server via WebSocket
 - TLS/SSL support with certificate validation
 - Automatic reconnection on connection loss
 - Login/password authentication
 
 ### Start/Stop Control
+
 - Built-in `enableService` parameter for start/stop control
 - `autoStart: true` - starts immediately when service enabled
 - `autoStart: false` - waits for manual enable
 - Graceful shutdown with cleanup via `onExit()`
 
 ### Watchdog Management
+
 - **Automatic watchdog keep-alive** when using `self.wait()` or `self.wait_for()`
 - Configurable thresholds (warning and error levels)
 - ⚠️ **NEVER use `time.sleep()`** - watchdog will timeout!
 
 ### Error Handling
+
 - System-level error triggering at 5 severity levels
 - Subsystem ID for error source identification
 - Error code tracking for specific conditions
 - Acknowledgment callbacks for error recovery
 
 ### State Machine Integration (Optional)
+
 - Run only during specific Motorcortex states
 - `run_during_states` configuration option
 - Automatic state monitoring
 
 ### Subscriptions
+
 - Real-time parameter updates via callbacks
 - Efficient grouped subscriptions
 - Thread-safe value sharing with `ThreadSafeValue`
 
 ### Systemd Service
+
 - Automatic startup with Motorcortex server
 - Configurable restart behavior
 - Proper dependency management
@@ -388,6 +403,7 @@ class LongRunningApp(McxClientAppThread):
 ```
 
 **When to use:**
+
 - ✅ `McxClientApp`: Simple sequential workflows (recommended default)
 - ✅ `McxClientAppThread`: Long-running operations that need immediate stop response
 
@@ -409,6 +425,7 @@ class MyAppConfiguration(McxClientAppConfiguration):
     "login": "admin",
     "password": "pass",
     "target_url": "wss://192.168.1.100",
+    "cert": "mcx.cert.crt",
     "log_interval": 0.5,
     "log_file": "sensor_data.json"
   }
@@ -429,7 +446,7 @@ class MyApp(McxClientApp):
     def __init__(self, options):
         super().__init__(options)
         self.command_detector = ChangeDetector()
-    
+
     def startOp(self):
         # Subscribe to commandWord
         self.cmd_sub = self.sub.subscribe(
@@ -437,7 +454,7 @@ class MyApp(McxClientApp):
             "cmd", frq_divider=10
         ).get()
         self.cmd_sub.notify(lambda msg: self.command_detector._ChangeDetector__value.set(msg[0].value[0]))
-    
+
     def iterate(self):
         # Check for commands (ignore changes TO zero)
         if self.command_detector.has_changed(trigger_on_zero=False):
@@ -474,6 +491,7 @@ Add your own Python dependencies by editing `requirements.txt` and rebuilding th
 ## Best Practices
 
 ✅ **DO:**
+
 - Use `self.wait()` instead of `time.sleep()` (keeps watchdog alive)
 - Keep `iterate()` clean - extract logic into private helper methods
 - Use subscriptions instead of polling parameters
@@ -484,6 +502,7 @@ Add your own Python dependencies by editing `requirements.txt` and rebuilding th
 - Unsubscribe in `onExit()`
 
 ❌ **DON'T:**
+
 - Use `time.sleep()` - watchdog will timeout!
 - Block in subscription callbacks
 - Poll parameters in `iterate()` - use subscriptions
@@ -515,12 +534,14 @@ The canonical version string is stored in `src/mcx_client_app/_version.py` and t
 ## Troubleshooting
 
 ### Connection Issues
+
 - Verify `target_url` in `services_config.json` Config section
 - Check certificate path (use `/etc/ssl/certs/mcx.cert.pem` on MCX-RTOS, `mcx.cert.crt` locally)
 - Ensure Motorcortex server is running and accessible
 - Verify login/password credentials
 
 ### Service Not Starting
+
 - Check if `autoStart: true` is set in Config section
 - Verify `enableService` parameter is enabled
 - Check service status: `systemctl status your-service-name`
@@ -528,17 +549,20 @@ The canonical version string is stored in `src/mcx_client_app/_version.py` and t
 - Verify configuration file is valid JSON
 
 ### Watchdog Timeout Errors
+
 - Replace all `time.sleep()` with `self.wait()`
 - Add periodic `self.wait(0.01)` calls in long loops
 - Ensure `iterate()` doesn't block for long periods
 
 ### Parameter Access Errors
+
 - Use `self.options.get_service_parameter_path` for service parameters
 - Verify parameter types match usage (can't write to `output` parameters)
 - Check parameter paths in DESK tool or parameter tree
 - Ensure parameters are defined in `services_config.json` Parameters section
 
 ### Build Issues
+
 - Ensure Docker is installed and running: `docker --version`
 - Update `PYTHON_SCRIPT` in `package_config.json` if you renamed files
 - Review build logs for specific errors
