@@ -6,6 +6,8 @@
 
 This template provides a ready-to-use structure for creating Python applications that interact with Motorcortex servers. MCX-Client-Apps connect to a Motorcortex control system via WebSocket to monitor parameters, control robots, automate workflows, and integrate with external systems. The template includes everything needed to develop, test, and deploy your application as a Debian package compatible with MCX-RTOS.
 
+> Warning: Older Motorcortex-robot versions (pre-3.14.0) do not create a `services` folder in the Motorcortex data tree with serviceParameters, Watchdog and Errorhandling. The client template can still be used, but add your serviceParameter to the userParameters (.conf/config/userparameters.json). Errorhandler & Watchdog are only possible with updated Motorcortex-robot. 
+
 ## Quick Start
 
 1. **Clone or download this template** (When using the Motorcortex VsCode extension, run the command "Motorcortex Utils: Create Python MCX Client App")
