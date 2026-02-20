@@ -28,7 +28,7 @@ ARG CACHE_BUST=0
 
 # Copy makeDeb.py, configs, and Dockerfiles into the image
 COPY makeDeb.py /usr/local/bin/makeDeb.py
-COPY default_service_config.json /usr/local/bin/default_service_config.json
+COPY default_package_config.json /usr/local/bin/default_package_config.json
 COPY template.service.in /usr/local/bin/template.service.in
 COPY app.Dockerfile /usr/local/bin/app.Dockerfile
 

@@ -502,7 +502,7 @@ exit 0
         raise
 
     # Service file
-    service_template = get_config_value('SERVICE_TEMPLATE', config_file_path, str(script_dir / 'default_service_config.json'))
+    service_template = get_config_value('SERVICE_TEMPLATE', config_file_path, str(script_dir / 'default_package_config.json'))
 
     debug_print(f"Using service template: {service_template}", debug_enabled)
 
@@ -978,7 +978,7 @@ def main():
 
     # Setup paths
     script_dir = Path(__file__).parent
-    default_config = script_dir / 'default_service_config.json'
+    default_config = script_dir / 'default_package_config.json'
 
     # Determine Python command
     python_cmd = determine_python_command(args.python_path)
