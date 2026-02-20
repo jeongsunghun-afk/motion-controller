@@ -4,6 +4,31 @@ You can download it from the Motorcortex Store.
 Make sure to have the Motorcortex Anthropomorphic Robot application running and that you can connect to it using the DESK-Tool.
 
 Start up the robot in the GUI.
+
+For this example, the python package 'motorcortex-robot-control-python' is used. You can install it with: `pip install motorcortex-robot-control-python`
+
+This example demonstrates how to move the robot left and right using a simple client application.
+
+In service_config.json, the robot app is added with the following snippet:
+
+```json
+{
+    "Name": "RobotAppExample",
+    "Enabled": true,
+    "Config": {
+    "login": "admin",
+    "password": "vectioneer",
+    "target_url": "wss://192.168.2.100",
+    "cert": "examples/mcx.cert.crt",
+    "autoStart": true
+    },
+    "Watchdog": {
+    "Enabled": false,
+    "Disabled": true,
+    "high": 1000000,
+    "tooHigh": 5000000
+    }
+}
 """
 
 import sys
@@ -99,12 +124,16 @@ class RobotMotionApp(McxClientApp):
 
 
 if __name__ == '__main__':
-    new_options = McxClientAppConfiguration(
-        login="",
-        password="",
-        target_url="",
-        auto_engage=True
+    client_options = McxClientAppConfiguration(
+        name="RobotAppExample"
     )
 
-    app = RobotMotionApp(new_options)
+    client_options.set_config_paths(
+        deployed_config="/etc/motorcortex/config/services/services_config.json",  # This is only needed when deployed on a Motorcortex controller. If only locally running, you can set it to None.
+        non_deployed_config="examples/services_config.json"
+    )
+    client_options.load_config()
+
+
+    app = RobotMotionApp(client_options)
     app.run()

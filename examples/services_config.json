@@ -1,0 +1,119 @@
+{
+  "Version": "1.0.0",
+  "Services": [
+    {
+      "Name": "CustomButtonExample",
+      "Enabled": true,
+      "Parameters": {
+        "Version": "1.0",
+        "Children": [
+          {
+            "Name": "Counter",
+            "Type": "int,parameter_volatile",
+            "Value": 0
+          }
+        ]
+      },
+      "Config": {
+        "login": "admin",
+        "password": "vectioneer",
+        "target_url": "wss://192.168.2.100",
+        "cert": "examplesmcx.cert.crt",
+        "startButton": true
+      },
+      "Watchdog": {
+        "Enabled": true,
+        "Disabled": true,
+        "high": 1000000,
+        "tooHigh": 5000000
+      }
+    },
+    {
+      "Name": "StartButtonExample",
+      "Enabled": true,
+      "Config": {
+        "login": "admin",
+        "password": "vectioneer",
+        "target_url": "wss://192.168.2.100",
+        "cert": "examples/mcx.cert.crt",
+        "startButton": true
+      },
+      "Watchdog": {
+        "Enabled": true,
+        "Disabled": true,
+        "high": 1000000,
+        "tooHigh": 5000000
+      }
+    },
+    {
+      "Name": "RobotAppExample",
+      "Enabled": true,
+      "Config": {
+        "login": "admin",
+        "password": "vectioneer",
+        "target_url": "wss://192.168.2.100",
+        "cert": "examples/mcx.cert.crt",
+        "autoStart": true
+      },
+      "Watchdog": {
+        "Enabled": false,
+        "Disabled": true,
+        "high": 1000000,
+        "tooHigh": 5000000
+      }
+    },
+    {
+      "Name": "DataLoggerExample",
+      "Enabled": true,
+      "Config": {
+        "login": "admin",
+        "password": "vectioneer",
+        "target_url":"wss://192.168.2.100",
+        "cert": "examples/mcx.cert.crt",
+        "run_during_states": [
+        ],
+        "auto_engage": false,
+        "paths_to_log": [
+              "root/ManipulatorControl/jointPositionsTarget",
+              "root/ManipulatorControl/jointPositionsActual"
+          ],
+          "log_file": "data/robot_data.csv",
+          "divider":10,
+          "batch_size":100,
+          "save_interval":3
+      },
+      "Watchdog": {
+        "Enabled": true,
+        "Disabled": true,
+        "high": 1000000,
+        "tooHigh": 5000000
+      }
+    },
+    {
+      "Name": "ErrorExample",
+      "Enabled": true,
+      "Config": {
+        "login": "admin",
+        "password": "vectioneer",
+        "target_url": "wss://192.168.2.100",
+        "cert": "examples/mcx.cert.crt"
+      },
+      "Parameters": {
+        "Version": "1.0",
+        "Children": [
+          {
+            "Name": "input",
+            "Type": "int, input",
+            "Value": 0
+          }
+        ]
+      },
+      "Watchdog": {
+        "Enabled": false,
+        "Disabled": true,
+        "high": 1000000,
+        "tooHigh": 5000000
+      }
+    }
+  ]
+}

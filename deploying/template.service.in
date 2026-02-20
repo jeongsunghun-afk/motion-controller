@@ -7,6 +7,7 @@ StartLimitIntervalSec=0
 [Service]
 Type=simple
 ExecStartPre=/bin/sleep 3
+Environment=DEPLOYED=TRUE
 ExecStart=@EXEC_START@
 WorkingDirectory=/home/admin
 User=admin

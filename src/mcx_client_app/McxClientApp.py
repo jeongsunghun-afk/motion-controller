@@ -18,7 +18,10 @@ import operator
 from typing import Optional, TypeVar, Generic
 import copy
 from .McxClientAppConfiguration import McxClientAppConfiguration
+from .McxWatchdog import McxWatchdog
+from .McxErrorHandler import McxErrorHandler
 import traceback
+from enum import Enum
 
 T = TypeVar('T')
 
@@ -32,6 +35,25 @@ waitForOperators = {
     ">=": operator.ge,
     "in": lambda a, b: a in b,
 }
+
+def map_subscription_reply(msg, param_layout: list[str]) -> dict:
+    """
+    Map subscription reply message to parameter path -> value dictionary.
+
+    Args:
+        msg: Subscription reply message (list of parameter values).
+        param_layout (list[str]): List of parameter paths corresponding to the message.
+    Returns:
+        dict: Dictionary mapping parameter paths to their values.
+    """
+    if (len(msg) != len(param_layout)):
+        logging.error(f"Message length {len(msg)} does not match parameter layout length {len(param_layout)}")
+    assert len(msg) == len(param_layout), "Message length and parameter layout length must match"
+
+    values: dict = {}
+    for i, path in enumerate(param_layout):
+        values[path] = msg[i].value
+    return values
 
 
 class StopSignal(Exception):
@@ -69,6 +91,61 @@ class ThreadSafeValue(Generic[T]):
         with self._lock:
             self.__value = copy.deepcopy(value)
 
+class ServiceStatus(Enum):
+    """
+    Enum representing service status values.
+    """
+    NOT_RUNNING = 0
+    WAITING_TO_START = 1
+    RUNNING = 2
+
+class StatusManager:
+    """
+    Manages status parameters for the McxClientApp.
+    """
+    def __init__(self, req: motorcortex.Request|None, base_path: str) -> None:
+        self.req = req
+        self.base_path = base_path
+        self.__status: ThreadSafeValue[ServiceStatus] = ThreadSafeValue(ServiceStatus.NOT_RUNNING)
+
+    def set_request(self, req: motorcortex.Request) -> None:
+        """
+        Set the motorcortex Request object.
+
+        Args:
+            req (motorcortex.Request): The request object to set.
+        """
+        self.req = req
+
+    def set_status(self, value: int) -> None:
+        """
+        Set a status parameter value.
+
+        Args:
+            value (int): Value to set.
+        """
+        if (self.req is None):
+            return
+        try:
+            status = ServiceStatus(value)
+        except ValueError:
+            raise ValueError(f"Invalid status value: {value}")
+        self.__status.set(ServiceStatus(value))
+        param_path = f"{self.base_path}/statusWord"
+        self.req.setParameter(param_path, value).get()
+
+    def get_status(self, status_name: str) -> int:
+        """
+        Get a status parameter value.
+
+        Args:
+            status_name (str): Name of the status parameter.
+
+        Returns:
+            int: The current value of the status parameter.
+        """
+        return self.__status.get()
+
 class McxClientApp:
     """
     Base client application for interacting with a Motorcortex server.
@@ -101,6 +178,24 @@ class McxClientApp:
         self.__id = str(uuid.uuid4())
         self.running: ThreadSafeValue = ThreadSafeValue(False)
         self.__running_subscription: TypingOptional[motorcortex.Subscription] = None
+        # layout of the last control subscription (list of param paths)
+        self._control_params: list[str] = []
+
+        self.watchdog: McxWatchdog = McxWatchdog(
+            watchdog_folder_path=f"{self.options.get_parameter_path}/watchdog", 
+            enabled = self.options.enable_watchdog)
+        
+        self.statusManager = StatusManager(
+            req=self.req, 
+            base_path=self.options.get_parameter_path)
+        
+        self.errorHandler = McxErrorHandler(
+            error_folder_path=self.options.get_parameter_path + "/error",
+            error_reset_parameter=self.options.error_reset_param,
+            req=self.req,
+            sub=self.sub,
+            enabled=self.options.enable_error_handler)
+    
         
     def connect(self) -> None:
         """
@@ -124,6 +219,14 @@ class McxClientApp:
             logging.error(f"Failed to connect to {self.options.ip_address}. Exiting. Error: {e}\nTraceback:\n{tb}")
             raise
 
+        self.watchdog.set_request(self.req)
+        self.watchdog.setDisable(False)
+
+        self.statusManager.set_request(self.req)
+
+        self.errorHandler.set_request_and_subscription(self.req, self.sub)
+        self.errorHandler.start_subscription()
+
     def wait_for(
         self,
         param: str,
@@ -132,6 +235,7 @@ class McxClientApp:
         timeout: float = 30,
         testinterval: float = 0.2,
         operat: str = "==",
+        keep_watchdog: bool = True,
         block_stop_signal: bool = False
     ) -> bool:
         """
@@ -144,6 +248,7 @@ class McxClientApp:
             timeout (float): Timeout in seconds. -1 or 0 for infinite.
             testinterval (float): Polling interval in seconds.
             operat (str): Comparison operator as string (==, !=, <, <=, >, >=, in).
+            keep_watchdog (bool): If True, keep watchdog alive while waiting.
             block_stop_signal (bool): If True, ignore stop signal.
 
         Returns:
@@ -159,6 +264,12 @@ class McxClientApp:
             if not self.running.get() and not block_stop_signal:
                 logging.warning("STOP")
                 raise StopSignal("Received stop signal")
+            # Keep the watchdog alive while waiting unless explicitly disabled
+            if keep_watchdog and getattr(self, "watchdog", None) is not None:
+                try:
+                    self.watchdog.iterate()
+                except Exception:
+                    logging.debug("Watchdog iterate raised an exception, continuing")
             time.sleep(testinterval)
             if (time.time() > to) and (timeout > 0):
                 logging.warning("Timeout")
@@ -169,6 +280,7 @@ class McxClientApp:
         self,
         timeout: float = 30,
         testinterval: float = 0.2,
+        keep_watchdog: bool = True,
         block_stop_signal: bool = False
     ) -> bool:
         """
@@ -178,6 +290,7 @@ class McxClientApp:
             timeout (float): Timeout in seconds. -1 or 0 for infinite.
             testinterval (float): Polling interval in seconds.
             block_stop_signal (bool): If True, ignore stop signal.
+            keep_watchdog (bool): If True, keep watchdog alive while waiting.
 
         Returns:
             bool: True if waited full timeout, False if timeout occurred.
@@ -190,6 +303,12 @@ class McxClientApp:
             if not self.running.get() and not block_stop_signal:
                 logging.warning("STOP")
                 raise StopSignal("Received stop signal")
+            # Keep the watchdog alive while waiting unless explicitly disabled
+            if keep_watchdog and getattr(self, "watchdog", None) is not None:
+                try:
+                    self.watchdog.iterate()
+                except Exception:
+                    logging.debug("Watchdog iterate raised an exception, continuing")
             time.sleep(testinterval)
             if (time.time() > to) and (timeout > 0):
                 return False
@@ -201,40 +320,33 @@ class McxClientApp:
         """
         self.running.set(False)
     
-    def _running_callback(self, msg) -> None:
+    def _running_callback(self, msg:list) -> None:
         """
         Callback for control parameter changes (start/stop and/or state).
         (Happens in subscription thread.)
         """
-        # Determine if we should be running
-        should_run = True
-        
-        # Parse message based on subscription layout
-        if self.options.start_stop_param and self.options.allowed_states:
-            # Both parameters subscribed: [start_stop, state]
-            start_stop_value = msg[0].value[0]
-            state_value = msg[1].value[0]
-            
-            should_run = (start_stop_value != 0)
-            allowed_values = [s.value for s in self.options.allowed_states]
-            should_run = should_run and (state_value in allowed_values)
-            
-        elif self.options.start_stop_param:
-            # Only start/stop parameter
-            start_stop_value = msg[0].value[0]
-            should_run = (start_stop_value != 0)
-            
-        elif self.options.allowed_states:
-            # Only state parameter
-            state_value = msg[0].value[0]
-            allowed_values = [s.value for s in self.options.allowed_states]
-            should_run = (state_value in allowed_values)
-        
-        # Update running state if changed
+
+        result: dict = map_subscription_reply(msg, self._control_params)
+
+        isEnabled: bool = bool(result.get(f"{self.options.get_parameter_path}/enableService", [0])[0])
+
+        # Extract the scalar current state value safely (subscription returns a list/tuple)
+        current_state = None
+        state_val = result.get(self.options.state_param, None)
+        if isinstance(state_val, (list, tuple)) and len(state_val) > 0:
+            current_state = state_val[0]
+        else:
+            current_state = state_val
+
+        allowed_values = [s.value for s in self.options.allowed_states]
+        isAllowedState: bool = (current_state in allowed_values) if self.options.allowed_states else True
+
+        should_run = isEnabled and isAllowedState
+
         if self.running.get() != should_run:
             logging.debug(f"Running state changed to {should_run}")
             self.running.set(should_run)
-            
+
     def _setupControlSubscription(self) -> None:
         """Set up single subscription for control parameters (start/stop and/or state).
 
@@ -242,30 +354,23 @@ class McxClientApp:
         relevant control parameters. On successful subscription the internal
         running callback is registered.
         """
-        control_params: list[str] = []
-        if self.options.start_stop_param:
-            try:
-                # Ensure the start/stop parameter is initialized to 0
-                self.req.setParameter(self.options.start_stop_param, 0).get()
-            except Exception as e:
-                tb = traceback.format_exc()
-                logging.error(f"Failed to initialize start/stop parameter '{self.options.start_stop_param}': {e}\n{tb}")
-                raise
-            control_params.append(self.options.start_stop_param)
+        self._control_params: list[str] = []
+
+        self._control_params.append(f"{self.options.get_parameter_path}/enableService")
 
         if self.options.allowed_states:
-            control_params.append(self.options.state_param)
+            self._control_params.append(self.options.state_param)
 
-        if control_params:
+        if self._control_params:
             try:
                 self.__running_subscription = self.sub.subscribe(
-                    control_params,
+                    self._control_params,
                     group_alias=f"{self.__id}_control",
-                    frq_divider=100
+                    frq_divider=1000
                 )
                 result = self.__running_subscription.get()
                 if result is not None and result.status == motorcortex.OK:
-                    logging.debug(f"Control parameters subscription successful: {control_params}")
+                    logging.debug(f"Control parameters subscription successful: {self._control_params}")
                     self.__running_subscription.notify(self._running_callback)
                 else:
                     logging.error("Failed to subscribe to control parameters.")
@@ -298,6 +403,20 @@ class McxClientApp:
         """
         pass
 
+    def preIterate(self) -> None:
+        """
+        Called before each iterate() call.
+        Override this method to perform actions before each iteration.
+        """
+        self.statusManager.set_status(ServiceStatus.RUNNING.value)
+
+    def postIterate(self) -> None:
+        """
+        Called after each iterate() call.
+        Override this method to perform actions after each iteration.
+        """
+        self.statusManager.set_status(ServiceStatus.NOT_RUNNING.value)
+
     def run(self) -> None:
         """
         Run the client application: connect, engage, run iterate, disengage, disconnect.
@@ -305,11 +424,11 @@ class McxClientApp:
         This method:
         1. Connects to the Motorcortex server
         2. Calls startOp() for initialization
-        3. Engages the system
-        4. Runs the iterate() method in the main thread
-        5. Monitors start/stop signals
-        6. Disengages and calls onExit() before disconnecting
+        3. Runs the iterate() method in the main thread
+        4. Monitors start/stop signals
+        5. Disengages and calls onExit() before disconnecting
         """
+        
         self.connect()
         logging.debug("Connected to Motorcortex server.")
 
@@ -317,26 +436,35 @@ class McxClientApp:
         
         self.startOp()
         
-        # Initialize running state based on current conditions
-        if not self.options.start_stop_param and not self.options.allowed_states:
-            # No conditions to check, start immediately
-            self.running.set(True)
-        
         try:
             while True:
                 try:
-                    
-                    logging.info("Waiting for start signal...")
+                    if (not self.running.get()):
+                        logging.info("Waiting to start...")
+                        self.statusManager.set_status(ServiceStatus.WAITING_TO_START.value)
+
                     # Wait for running to become True
                     while not self.running.get():
-                        time.sleep(0.1)
+                        if self.options.autoStart:
+                            try:
+                                # Ensure it starts as disabled according to autoStart
+                                self.req.setParameter(self.options.get_start_button_parameter_path, int(self.options.autoStart)).get()
+                            except Exception as e:
+                                tb = traceback.format_exc()
+                                logging.error(f"Failed to set to disable: '{self.options.get_start_button_parameter_path}': {e}\n{tb}")
+                                raise
+                        time.sleep(0.5)
                     
                     logging.info("Running user iterate...")
                     # Run iterate method in the main thread
+
+                    self.preIterate()
                     while self.running.get():
                         self.iterate()
+                        self.watchdog.iterate()
+                    self.postIterate()
                     
-                    logging.debug("Stop signal detected. Waiting for next start signal...")
+                    logging.debug("Iterate loop stopped...")
                     # Continue loop to wait for next start signal
                     
                 except StopSignal:
@@ -363,6 +491,7 @@ class McxClientApp:
             self.running.set(False)
             
             try:
+                self.postIterate()
                 self.onExit()
             except Exception as e:
                 tb = traceback.format_exc()
@@ -424,21 +553,27 @@ class McxClientAppThread(McxClientApp):
         
         self.startOp()
         
-        # Initialize running state based on current conditions
-        if not self.options.start_stop_param and not self.options.allowed_states:
-            # No conditions to check, start immediately
-            self.running.set(True)
-        
         try:
             while True:
                 try:
-                    
-                    logging.info("Waiting for start signal...")
+                    if (not self.options.autoStart and not self.running.get()):
+                        logging.info("autoStart not enabled so waiting to start...")
+                        self.statusManager.set_status(ServiceStatus.WAITING_TO_START.value)
+
                     # Wait for running to become True
                     while not self.running.get():
-                        time.sleep(0.1)
+                        if self.options.autoStart:
+                            try:
+                                # Ensure it starts as disabled according to autoStart
+                                self.req.setParameter(self.options.get_start_button_parameter_path, int(self.options.autoStart)).get()
+                            except Exception as e:
+                                tb = traceback.format_exc()
+                                logging.error(f"Failed to set to disable: '{self.options.get_start_button_parameter_path}': {e}\n{tb}")
+                                raise
+                        time.sleep(0.5)
                     
                     logging.info("Running user iterate in separate thread...")
+                    self.preIterate()
                     
                     # Start iterate method in a separate thread
                     self._action_thread = threading.Thread(target=self._action_wrapper, daemon=True)
@@ -446,7 +581,7 @@ class McxClientAppThread(McxClientApp):
                     
                     # Main thread monitors the running state
                     while self.running.get():
-                        time.sleep(0.1)  # Check running state periodically
+                        self.watchdog.iterate()
                     
                     # Stop signal received, stop the iterate thread
                     logging.debug("Stop signal detected in main thread.")
@@ -456,6 +591,8 @@ class McxClientAppThread(McxClientApp):
                         if self._action_thread.is_alive():
                             logging.warning("Iterate thread did not stop gracefully within timeout.")
                     
+
+                    self.postIterate()
                     logging.debug("Iterate thread stopped. Waiting for next start signal...")
                     # Continue loop to wait for next start signal
                     
@@ -491,9 +628,9 @@ class McxClientAppThread(McxClientApp):
             except Exception as e:
                 tb = traceback.format_exc()
                 logging.error(f"Error during onExit: {e}\nTraceback:\n{tb}")
-            
+
             if self.req:
-                try:
+                try: 
                     self.req.close()
                 except Exception as e:
                     tb = traceback.format_exc()

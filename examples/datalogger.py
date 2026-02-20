@@ -4,6 +4,38 @@ You can download it from the Motorcortex Store.
 Make sure to have the Motorcortex Anthropomorphic Robot application running and that you can connect to it using the DESK-Tool.
 
 This example demonstrates how to create a data logger that logs parameter values to a CSV file in a thread-safe manner.
+
+Add the following json snippet to your Motorcortex service configuration file and deploy to enable this application:
+```
+{
+    "Name": "DataLoggerExample",
+    "Enabled": true,
+    "Config": {
+    "login": "admin",
+    "password": "vectioneer",
+    "target_url":"wss://192.168.2.100",
+    "cert": "mcx.cert.crt",
+    "run_during_states": [
+    ],
+    "auto_engage": false,
+    "paths_to_log": [
+            "root/ManipulatorControl/jointPositionsTarget",
+            "root/ManipulatorControl/jointPositionsActual"
+        ],
+        "log_file": "data/robot_data.csv",
+        "divider":10,
+        "batch_size":100,
+        "save_interval":3
+    },
+    "Watchdog": {
+    "Enabled": true,
+    "Disabled": true,
+    "high": 1000000,
+    "tooHigh": 5000000
+    }
+}
+```
+
 """
 #
 #   Developer : Coen Smeets (Coen@vectioneer.com)
@@ -241,19 +273,14 @@ if __name__ == "__main__":
             
             super().__init__(**args)
             
-    # Add current script directory to path so dataLogger_config.json can be found
-    config_path = os.path.join(os.path.dirname(__file__), 'dataLogger_config.json')
-    options = DataLoggerOptions()
-    options.set_config_paths(
-        deployed_config="/etc/motorcortex/config/services/datalogger.json", #This is only needed when deployed on a Motorcortex controller. If only locally running, you can set it to None.
-        non_deployed_config=config_path
-    ) 
-    
-    print("\nNOTE: Update the dataLogger_config.json file to set login, password, target_url, and parameters to log.\n\n")
-            
-    logging.info(f"McxClientAppConfiguration initialized: {options.as_dict()}")
+    client_options = DataLoggerOptions(name="DataLoggerExample")
+    client_options.set_config_paths(
+            deployed_config="/etc/motorcortex/config/services/services_config.json",  # This is only needed when deployed on a Motorcortex controller. If only locally running, you can set it to None.
+            non_deployed_config="examples/services_config.json"
+        )
+    client_options.load_config()
     
     app = dataLoggerClientApp(
-        options=options
+        options=client_options
     )
     app.run()

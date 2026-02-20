@@ -1,0 +1,22 @@
+{
+  "Version": "1.0.0",
+  "Services": [
+        {
+        "Name": "mcx-client-app",
+        "Enabled": true,
+        "Parameters": {
+            "Version": "1.0",
+            "Children": []
+        },
+        "Watchdog": {
+            "Enabled": true
+        },
+        "Config": {
+            "login": "admin",
+            "password": "vectioneer",
+            "target_url": "wss://192.168.2.100",
+            "cert": "mcx.cert.crt"  
+        }
+        }
+    ]
+}
