@@ -842,7 +842,7 @@ def build_deb(package_dir: str, output_file: str, config: dict) -> bool:
                     rel = path.relative_to(data_folder)
                 except Exception:
                     continue
-                tf.add(path, arcname=str(rel))
+                tf.add(path, arcname=str(rel), recursive=False)
 
     # Step 4: combine using ar
     ar_archive = ArArchive(output_file, mode='w')
