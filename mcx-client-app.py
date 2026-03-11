@@ -56,7 +56,8 @@ class ExampleMcxClientApp(McxClientApp):
         Increment counter and check for reset button press.
         """
         logging.info("Client app is running...")
-        self.wait(1)  # Wait 1 second between increments
+        self.wait(10)  # Wait 1 second between increments
+        self.req.setParameter("root/SignalGenerators/SignalGenerator01/offset",1)
         
     def onExit(self) -> None:
         """
@@ -69,7 +70,7 @@ if __name__ == "__main__":
     client_options = McxClientAppConfiguration(name="mcx-client-app")
     client_options.set_config_paths(
         deployed_config="/etc/motorcortex/config/services/services_config.json",  # This is only needed when deployed on a Motorcortex controller. If only locally running, you can set it to None.
-        non_deployed_config="services_config.json"
+        non_deployed_config="services_config.template.json"
     )
     client_options.load_config()
 
