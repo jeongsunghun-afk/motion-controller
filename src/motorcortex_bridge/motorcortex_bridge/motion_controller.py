@@ -56,9 +56,14 @@ HOME_THRESHOLD_RAD = math.radians(0.01)  # 홈 판정 임계값 (0.01°)
 HOME_SPEED_DEG     = 10.0                # ★ 홈 복귀 속도 조정 [°/s] ← 이 값만 변경
 HOME_MAX_VEL       = math.radians(HOME_SPEED_DEG)        # [rad/s]
 HOME_MAX_ACC       = math.radians(HOME_SPEED_DEG / 2.0)  # [rad/s²]
+
 MOVEL_VEL          = 0.05               # moveL Cartesian 이동 속도 [m/s]
-MOVEL_STEP_X       = 0.020              # moveL step: x축 반진폭 [m]  (p_start=+20mm, p_end=−20mm)
-MOVEL_STEP_H       = 0.030              # moveL step: z축 step height [m]
+MOVEL_STEP_X       = -0.010              # moveL 기본 step: x축[m] 중력방향(-)
+MOVEL_STEP_Y       = 0                  # moveL 기본 step: y축[m] 좌우
+MOVEL_STEP_Z       = 0                  # moveL 기본 step: z축[m] 전방/후방
+
+GAIT_STEP_X        = +0.050              # gait 기본 step: x축 발 높이 [m] (X가 클수록 발이 더 높게 들어올려짐)
+GAIT_STEP_Z        = +0.020              # gait 기본 step: z축 전후 반진폭 [m] (FK 기준: +z=전방, -X=아래)
 
 
 def _to_phy(mcx_j: list) -> list:
@@ -445,6 +450,12 @@ class MotionController:
 
         # moveL 목표 좌표 (힙 원점 기준, [m])  — 외부에서 set_movel_target()으로 설정
         self._movel_target: list = None   # (Px, Py, Pz)  or  [(Px,Py,Pz), ...]
+
+        # gait 시작점/끝점 (힙 원점 기준, [m])  — 외부에서 set_gait_waypoints()으로 설정
+        # None 이면 _run_gait() 에서 p_cur ± GAIT_STEP_X 로 자동 계산
+        self._gait_p_start: tuple = None  # (Px, Py, Pz)
+        self._gait_p_end:   tuple = None  # (Px, Py, Pz)
+
         self._waypoints: list    = []     # start()에서 로드; 접근 전 초기화 보장
 
         # 보간 루프 스레드 시작
@@ -471,6 +482,17 @@ class MotionController:
             target = [target]   # 단일 점 → 리스트로 통일
         with self._lock:
             self._movel_target = target
+
+    # ── gait 시작점/끝점 설정 ─────────────────────────────────────────────────
+    def set_gait_waypoints(self, p_start, p_end):
+        """
+        gaitEvent 트리거 전에 호출하여 Bezier 발걸음의 시작점·끝점을 설정.
+        p_start, p_end : (Px, Py, Pz) [m]  (힙 원점 기준)
+        None 전달 시 해당 점을 p_cur ± GAIT_STEP_X 자동 계산으로 복귀.
+        """
+        with self._lock:
+            self._gait_p_start = tuple(p_start) if p_start is not None else None
+            self._gait_p_end   = tuple(p_end)   if p_end is not None else None
 
     # ── 초기 위치 설정 (MCX joint offset 기준) ───────────────────────────────
     def set_initial_positions(self, positions: list):
@@ -651,7 +673,8 @@ class MotionController:
                 self._in_movel = True
                 if log_cb:
                     log_cb('Gait: Bezier 발걸음 패턴 실행')
-                self._run_gait(log_cb=log_cb)
+                self._run_gait(log_cb=log_cb) # swing(4차베지어곡선)
+                # self._run_gait2(log_cb=log_cb) # swing1(5차베지어곡선) -> stance -> swing2(5차베지어곡선)
                 self._mcx.reset_gait_event()
                 time.sleep(0.05)
                 self._gait_ev.clear()
@@ -660,17 +683,16 @@ class MotionController:
             # ── [Leg_test] moveL ────────────────────────────────────────────────
             elif self._movel_ev.is_set():
                 self._movel_ev.clear()
+                self._in_movel = True
 
                 actual_j_mcx = self._mcx.actual_positions
                 actual_j_phy = _to_phy(actual_j_mcx)
-                p_cur        = forward_kinematics(actual_j_phy)[-1]
+                p_cur        = np.array(forward_kinematics(actual_j_phy)[-1])
                 phi          = actual_j_phy[1] + actual_j_phy[2] + actual_j_phy[3]
                 with self._lock:
                     self._last_cmd_pos = list(actual_j_mcx)
-                    x_target = self._movel_target[0] if self._movel_target else None
-
-                if x_target is None:
-                    x_target = (p_cur[0] + MOVEL_STEP_X, p_cur[1], p_cur[2])
+                    x_target = self._movel_target[0] if self._movel_target \
+                        else (p_cur[0] + MOVEL_STEP_X, p_cur[1], p_cur[2] + MOVEL_STEP_Z)
 
                 if log_cb:
                     log_cb(
@@ -679,7 +701,6 @@ class MotionController:
                         f'{x_target[1]*1e3:.1f},{x_target[2]*1e3:.1f})mm'
                     )
                 self.move_l(x_target, phi=phi, log_cb=log_cb)
-                self._in_movel = True
                 self._mcx.reset_movel_event()
                 time.sleep(0.05)
                 self._movel_ev.clear()
@@ -778,11 +799,18 @@ class MotionController:
         with self._lock:
             self._last_cmd_pos = list(actual_j_mcx)
 
-        p_start = np.array([p_cur[0] + MOVEL_STEP_X, p_cur[1], p_cur[2]])
-        p_peak  = np.array([p_cur[0],                 p_cur[1], p_cur[2] + MOVEL_STEP_H])
-        p_end   = np.array([p_cur[0] - MOVEL_STEP_X, p_cur[1], p_cur[2]])
+        with self._lock:
+            gp_start = self._gait_p_start
+            gp_end   = self._gait_p_end
 
-        ctrl_pts  = [p_cur, p_start, p_peak, p_end]
+        p_start    = np.array(gp_start) if gp_start is not None \
+            else p_cur.copy()
+        p_end      = np.array(gp_end)   if gp_end is not None \
+            else np.array([p_cur[0], p_cur[1], p_cur[2] + GAIT_STEP_Z])
+
+        p_start_up = np.array([p_start[0] + GAIT_STEP_X, p_start[1], p_start[2]])
+        p_end_up   = np.array([p_end[0]   + GAIT_STEP_X, p_end[1],   p_end[2]])
+        ctrl_pts   = [p_start, p_start_up, p_end_up, p_end]
         chord     = sum(np.linalg.norm(ctrl_pts[i + 1] - ctrl_pts[i])
                         for i in range(len(ctrl_pts) - 1))
         dt        = self.traj_dt
@@ -798,6 +826,64 @@ class MotionController:
             )
 
         self._send_cst(dense_j, dt, 'gait', cartesian_refs=bezier_pts, log_cb=log_cb)
+
+    # ── gait2: 5차 Bezier 2단계 (이륙/착지 각 v=0 보장) ─────────────────────
+    def _run_gait2(self, log_cb=None):
+        """
+        5차 Bezier 2단계 발걸음 (blocking).
+          이륙: [p_start, p_start, c1, c2, p_peak, p_peak]  — 이륙 v=0, 도달 v=0
+          착지: [p_peak,  p_peak,  c3, c4, p_end,  p_end ]  — 출발 v=0, 착지 v=0
+        forceS(_force_s_active) 플래그를 실시간 체크.
+        """
+        actual_j_mcx = self._mcx.actual_positions
+        actual_j_phy = _to_phy(actual_j_mcx)
+        p_cur = np.array(forward_kinematics(actual_j_phy)[-1])
+        phi   = actual_j_phy[1] + actual_j_phy[2] + actual_j_phy[3]
+        with self._lock:
+            self._last_cmd_pos = list(actual_j_mcx)
+
+        with self._lock:
+            gp_start = self._gait_p_start
+            gp_end   = self._gait_p_end
+
+        p_start = np.array(gp_start) if gp_start is not None \
+            else p_cur.copy()
+        p_end   = np.array(gp_end)   if gp_end is not None \
+            else np.array([p_cur[0], p_cur[1], p_cur[2] + GAIT_STEP_Z])
+
+        # 접합점: 최고 높이(x), 시작/끝 z 중간
+        p_peak = np.array([p_start[0] + GAIT_STEP_X, p_start[1],
+                           (p_start[2] + p_end[2]) / 2])
+
+        # 이륙 5차: 수직 상승 → 전방 이동
+        liftoff_c1 = np.array([p_start[0] + GAIT_STEP_X, p_start[1], p_start[2]])
+        liftoff_c2 = np.array([p_start[0] + GAIT_STEP_X, p_start[1],
+                               p_start[2] + (p_peak[2] - p_start[2]) * 0.7])
+        liftoff_ctrl = [p_start, p_start, liftoff_c1, liftoff_c2, p_peak, p_peak]
+
+        # 착지 5차: 전방 이동 → 수직 하강
+        landing_c3 = np.array([p_end[0] + GAIT_STEP_X, p_end[1],
+                               p_end[2] + (p_peak[2] - p_end[2]) * 0.7])
+        landing_c4 = np.array([p_end[0] + GAIT_STEP_X, p_end[1], p_end[2]])
+        landing_ctrl = [p_peak, p_peak, landing_c3, landing_c4, p_end, p_end]
+
+        dt = self.traj_dt
+
+        def _run_phase(ctrl, label, j_phy):
+            chord = sum(np.linalg.norm(
+                np.array(ctrl[i + 1]) - np.array(ctrl[i])) for i in range(len(ctrl) - 1))
+            n = max(10, int(chord / (MOVEL_VEL * dt)))
+            pts = _bezier_curve(ctrl, n)
+            dense_j = self._ik_trajectory(pts, phi, j_phy, log_cb=log_cb, label=label)
+            if log_cb:
+                log_cb(f'{label} (φ={math.degrees(phi):.1f}°): '
+                       f'{n}pts / chord={chord*1e3:.1f}mm / dt={dt*1e3:.1f}ms')
+            self._send_cst(dense_j, dt, label, cartesian_refs=pts, log_cb=log_cb)
+
+        _run_phase(liftoff_ctrl, 'gait2_liftoff', actual_j_phy)
+
+        actual_j_phy2 = _to_phy(self._mcx.actual_positions)
+        _run_phase(landing_ctrl, 'gait2_landing', actual_j_phy2)
 
     # ── 궤적 실행 공통 내부 함수 ──────────────────────────────────────────────
     def load_trajectory(self) -> list:
