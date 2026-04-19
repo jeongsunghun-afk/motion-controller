@@ -731,7 +731,7 @@ class MotionController:
         """
         q_a_phy = _to_phy(self._mcx.actual_positions)
         x_a     = np.array(forward_kinematics(q_a_phy)[-1])
-        x_r     = x_a + np.array([0.01, 0.0, 0.0])   # X +10mm 고정 목표
+        x_r     = x_a.copy()
         phi     = q_a_phy[1] + q_a_phy[2] + q_a_phy[3]
 
         q_r_phy = analytical_ik(x_r[0], x_r[1], x_r[2], phi)
