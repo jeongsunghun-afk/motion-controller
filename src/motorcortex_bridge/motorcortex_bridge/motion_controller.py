@@ -58,12 +58,12 @@ HOME_MAX_VEL       = math.radians(HOME_SPEED_DEG)        # [rad/s]
 HOME_MAX_ACC       = math.radians(HOME_SPEED_DEG / 2.0)  # [rad/s²]
 
 MOVEL_VEL          = 0.05               # moveL Cartesian 이동 속도 [m/s]
-MOVEL_STEP_X       = -0.010              # moveL 기본 step: x축[m] 중력방향(-)
-MOVEL_STEP_Y       = 0                  # moveL 기본 step: y축[m] 좌우
+MOVEL_STEP_X       = -0.010             # moveL 기본 step: x축[m] 중력방향(-)
 MOVEL_STEP_Z       = 0                  # moveL 기본 step: z축[m] 전방/후방
 
-GAIT_STEP_X        = +0.050              # gait 기본 step: x축 발 높이 [m] (X가 클수록 발이 더 높게 들어올려짐)
-GAIT_STEP_Z        = +0.020              # gait 기본 step: z축 전후 반진폭 [m] (FK 기준: +z=전방, -X=아래)
+GAIT_STEP_X        = +0.050             # gait 기본 step: x축 발 높이 [m] (+x=위)
+GAIT_STEP_Z        = +0.020             # gait 기본 step: z축 전후 반진폭 [m] (+z=전방)
+GAIT_IMP_DELTA     = +0.008             # gait2 이륙/착지 임피던스 오프셋 [m] (δ, x축)
 
 
 def _to_phy(mcx_j: list) -> list:
@@ -827,13 +827,13 @@ class MotionController:
 
         self._send_cst(dense_j, dt, 'gait', cartesian_refs=bezier_pts, log_cb=log_cb)
 
-    # ── gait2: 5차 Bezier 2단계 (이륙/착지 각 v=0 보장) ─────────────────────
+    # ── gait2: 5차 Bezier 2단계 + forceS δ 임피던스 ─────────────────────────
     def _run_gait2(self, log_cb=None):
         """
         5차 Bezier 2단계 발걸음 (blocking).
-          이륙: [p_start, p_start, c1, c2, p_peak, p_peak]  — 이륙 v=0, 도달 v=0
-          착지: [p_peak,  p_peak,  c3, c4, p_end,  p_end ]  — 출발 v=0, 착지 v=0
-        forceS(_force_s_active) 플래그를 실시간 체크.
+          이륙: [p_start, p_start+δ, c1, c2, p_peak, p_peak]  forceS ON→OFF
+          착지: [p_peak,  p_peak,  c3, c4, p_end+δ, p_end  ]  forceS OFF→ON
+        δ(GAIT_IMP_DELTA) 오프셋으로 이착지 순간 임피던스 작동 시간 확보.
         """
         actual_j_mcx = self._mcx.actual_positions
         actual_j_phy = _to_phy(actual_j_mcx)
@@ -841,8 +841,6 @@ class MotionController:
         phi   = actual_j_phy[1] + actual_j_phy[2] + actual_j_phy[3]
         with self._lock:
             self._last_cmd_pos = list(actual_j_mcx)
-
-        with self._lock:
             gp_start = self._gait_p_start
             gp_end   = self._gait_p_end
 
@@ -855,23 +853,24 @@ class MotionController:
         p_peak = np.array([p_start[0] + GAIT_STEP_X, p_start[1],
                            (p_start[2] + p_end[2]) / 2])
 
-        # 이륙 5차: 수직 상승 → 전방 이동
-        liftoff_c1 = np.array([p_start[0] + GAIT_STEP_X, p_start[1], p_start[2]])
-        liftoff_c2 = np.array([p_start[0] + GAIT_STEP_X, p_start[1],
-                               p_start[2] + (p_peak[2] - p_start[2]) * 0.7])
-        liftoff_ctrl = [p_start, p_start, liftoff_c1, liftoff_c2, p_peak, p_peak]
+        # 이륙 5차: p_start → p_start+δ (forceS ON, toe-off) → 수직 상승 → 전방
+        liftoff_c1   = np.array([p_start[0] + GAIT_STEP_X, p_start[1], p_start[2]])
+        liftoff_c2   = np.array([p_start[0] + GAIT_STEP_X, p_start[1],
+                                 p_start[2] + (p_peak[2] - p_start[2]) * 0.7])
+        p_start_imp  = np.array([p_start[0] + GAIT_IMP_DELTA, p_start[1], p_start[2]])
+        liftoff_ctrl = [p_start, p_start_imp, liftoff_c1, liftoff_c2, p_peak, p_peak]
 
-        # 착지 5차: 전방 이동 → 수직 하강
-        landing_c3 = np.array([p_end[0] + GAIT_STEP_X, p_end[1],
-                               p_end[2] + (p_peak[2] - p_end[2]) * 0.7])
-        landing_c4 = np.array([p_end[0] + GAIT_STEP_X, p_end[1], p_end[2]])
-        landing_ctrl = [p_peak, p_peak, landing_c3, landing_c4, p_end, p_end]
+        # 착지 5차: 전방 → 수직 하강 → p_end+δ → p_end (forceS ON, 충격 흡수)
+        landing_c3  = np.array([p_end[0] + GAIT_STEP_X, p_end[1],
+                                p_end[2] + (p_peak[2] - p_end[2]) * 0.7])
+        landing_c4  = np.array([p_end[0] + GAIT_STEP_X, p_end[1], p_end[2]])
+        p_end_imp   = np.array([p_end[0] + GAIT_IMP_DELTA, p_end[1], p_end[2]])
+        landing_ctrl = [p_peak, p_peak, landing_c3, landing_c4, p_end_imp, p_end]
 
         dt = self.traj_dt
 
         def _run_phase(ctrl, label, j_phy):
-            chord = sum(np.linalg.norm(
-                np.array(ctrl[i + 1]) - np.array(ctrl[i])) for i in range(len(ctrl) - 1))
+            chord = sum(np.linalg.norm(ctrl[i + 1] - ctrl[i]) for i in range(len(ctrl) - 1))
             n = max(10, int(chord / (MOVEL_VEL * dt)))
             pts = _bezier_curve(ctrl, n)
             dense_j = self._ik_trajectory(pts, phi, j_phy, log_cb=log_cb, label=label)
@@ -880,10 +879,15 @@ class MotionController:
                        f'{n}pts / chord={chord*1e3:.1f}mm / dt={dt*1e3:.1f}ms')
             self._send_cst(dense_j, dt, label, cartesian_refs=pts, log_cb=log_cb)
 
+        # 이륙: forceS ON(toe-off δ구간) → 스윙 중 OFF
+        self._force_s_active = True
         _run_phase(liftoff_ctrl, 'gait2_liftoff', actual_j_phy)
+        self._force_s_active = False
 
+        # 착지: 스윙 중 OFF → forceS ON(충격흡수 δ구간)
         actual_j_phy2 = _to_phy(self._mcx.actual_positions)
         _run_phase(landing_ctrl, 'gait2_landing', actual_j_phy2)
+        self._force_s_active = True
 
     # ── 궤적 실행 공통 내부 함수 ──────────────────────────────────────────────
     def load_trajectory(self) -> list:
