@@ -450,6 +450,11 @@ class MotionController:
         self._force_grf_active = False        # GRF 피드백 포함 여부: True=tau_dyn+tau_grf / False=tau_dyn only
         self.force_t_ref       = np.zeros(3)  # forceT 목표 GRF [N] (힙 원점 기준, 초기=0 → GRF 상쇄)
         self._force_s_active   = False        # forceS 임피던스 토글
+
+        # 궤적 실행 중 힘 제어 게인 — 외부/콜백에서 직접 설정 (0 = 비활성)
+        self.kp_imp = np.zeros(3)   # Cartesian 강성 게인 [N/m]
+        self.kd_imp = np.zeros(3)   # Cartesian 감쇠 게인 [N·s/m]
+        self.kf_grf = np.zeros(3)   # GRF 피드백 게인
         self._gait_ev          = threading.Event()   # Gait
 
         # moveL 목표 좌표 (힙 원점 기준, [m])  — 외부에서 set_movel_target()으로 설정
@@ -606,6 +611,12 @@ class MotionController:
     def _on_force_s(self):
         """forceS 버튼: moveL 임피던스 모드 ON/OFF 토글."""
         self._force_s_active = not self._force_s_active
+        if self._force_s_active:
+            self.kp_imp = KP_IMP.copy()
+            self.kd_imp = KD_IMP.copy()
+        else:
+            self.kp_imp = np.zeros(3)
+            self.kd_imp = np.zeros(3)
         self._mcx.reset_force_s_event()
 
     def _on_force_t_start(self):
@@ -616,15 +627,18 @@ class MotionController:
     def _on_force_t_stop(self):
         """forceT=0 수신 — GRF 제어 종료."""
         self._force_t_active = False
+        self.kf_grf = np.zeros(3)
 
     def _on_force_f_start(self):
         """forceF=1 수신 — GRF 피드백 ON (tau_dyn + tau_grf)."""
         self._force_grf_active = True
+        self.kf_grf = KF_GRF.copy()
         self._mcx.reset_force_f_event()
 
     def _on_force_f_stop(self):
         """forceF=0 수신 — GRF 피드백 OFF (tau_dyn only)."""
         self._force_grf_active = False
+        self.kf_grf = np.zeros(3)
 
     def _on_gait(self):
         if not self._in_movel:
@@ -999,12 +1013,7 @@ class MotionController:
             pass
 
         zero_torque = [0.0] * N_AXES
-
-        # 발끝 속도 추정용 초기값 (cartesian_refs 없는 경우 미사용)
-        if cartesian_refs is not None:
-            _, _, x_a_prev = _fun_force_f(_to_phy(self._mcx.actual_positions))
-        else:
-            x_a_prev = np.zeros(3)
+        _, _, x_a_prev = _fun_force_f(_to_phy(self._mcx.actual_positions))
 
         if log_cb:
             log_cb(f'{label} 시작 / dt={dt*1000:.1f}ms'
@@ -1023,31 +1032,25 @@ class MotionController:
 
                 wp = list(wp)
 
-                if x_r_cart is not None:
-                    q_now_phy         = _to_phy(self._mcx.actual_positions)
-                    tau_dyn, J, x_a   = _fun_force_f(q_now_phy)
-                    dx_a              = (x_a - x_a_prev) / dt
-                    x_a_prev          = x_a.copy()
+                kp = self.kp_imp
+                kd = self.kd_imp
+                kf = self.kf_grf
 
-                    if self._force_t_active:
-                        if self._force_grf_active:
-                            grf_est = compute_grf(self._mcx.actual_torque, tau_dyn, J)
-                            tau_ff  = tau_dyn + J.T @ (KF_GRF * (self.force_t_ref - grf_est))
-                        else:
-                            tau_ff  = tau_dyn.copy()
-                        if self._force_s_active:
-                            tau_imp = compute_impedance_torque(
-                                          np.asarray(x_r_cart), x_a, J, dx_a=dx_a)
-                            tau = (tau_ff + tau_imp).tolist()
-                        else:
-                            tau = tau_ff.tolist()
-                    elif self._force_s_active:
+                if np.any(kp) or np.any(kd) or np.any(kf):
+                    x_r = (np.asarray(x_r_cart)
+                           if x_r_cart is not None
+                           else np.array(forward_kinematics(_to_phy(wp))[-1]))
+                    q_now_phy       = _to_phy(self._mcx.actual_positions)
+                    tau_dyn, J, x_a = _fun_force_f(q_now_phy)
+                    dx_a            = (x_a - x_a_prev) / dt
+                    x_a_prev        = x_a.copy()
+
+                    f_cart = kp * (x_r - x_a) - kd * dx_a
+                    if np.any(kf):
                         grf_est = compute_grf(self._mcx.actual_torque, tau_dyn, J)
-                        tau_imp = compute_impedance_torque(
-                                      np.asarray(x_r_cart), x_a, J, dx_a=dx_a)
-                        tau = (tau_dyn - J.T @ grf_est + tau_imp).tolist()
-                    else:
-                        tau = zero_torque
+                        f_cart += kf * (self.force_t_ref - grf_est)
+
+                    tau = (tau_dyn + J.T @ f_cart).tolist()
                 else:
                     tau = zero_torque
 
