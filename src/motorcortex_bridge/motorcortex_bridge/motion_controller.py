@@ -37,6 +37,7 @@ import itertools
 import threading
 import time
 import math
+from collections import deque
 import numpy as np
 
 from motorcortex_bridge.motorcortex_interface import (
@@ -416,11 +417,12 @@ class MotionController:
         self.traj_file = traj_file
         self.traj_dt   = traj_dt
 
-        self._lock       = threading.Lock()
-        self._ctrl_ready = False
-        self._in_movel   = False
+        self._lock = threading.Lock()
 
-        # RL trot 활성 여부 (True 시 _interp_loop 에서 보간 실행)
+        # 상태 머신 (STANDBY / RL_TROT / EXEC_TRAJ / FORCE_T_IDLE / FORCE_S_IDLE / HOME)
+        self._ctrl_state = 'STANDBY'
+
+        # RL trot 활성 여부
         self._rl_trot_active = False
 
         # 마지막 명령 위치 (위치 유지 / publish 참조용)
@@ -465,16 +467,29 @@ class MotionController:
         self._gait_p_start: tuple = None  # (Px, Py, Pz)
         self._gait_p_end:   tuple = None  # (Px, Py, Pz)
 
-        self._waypoints: list    = []     # start()에서 로드; 접근 전 초기화 보장
+        self._waypoints: list = []   # start()에서 로드; 접근 전 초기화 보장
 
-        # 보간 루프 스레드 시작
-        self._interp_thread = threading.Thread(target=self._interp_loop, daemon=True)
-        self._interp_thread.start()
+        # EXEC_TRAJ 큐
+        self._traj_queue     = deque()
+        self._cart_queue     = deque()
+        self._traj_dt_active = TRAJ_DT_DEFAULT
+        self._traj_label     = ''
+        self._traj_t0        = 0.0
+        self._traj_idx       = 0
+        self._traj_done_ev   = threading.Event()
+
+        # FORCE_T/S_IDLE 기준 위치
+        self._stance_q_r_mcx = [0.0] * N_AXES
+        self._stance_x_r     = np.zeros(3)
+
+        # 제어 루프 스레드 시작
+        self._control_thread = threading.Thread(target=self._control_loop, daemon=True)
+        self._control_thread.start()
 
     # ── 프로퍼티 ─────────────────────────────────────────────────────────────
     @property
     def in_movel(self) -> bool:
-        return self._in_movel
+        return self._ctrl_state == 'EXEC_TRAJ'
 
     @property
     def last_cmd_positions(self) -> list:
@@ -507,7 +522,7 @@ class MotionController:
     def set_initial_positions(self, positions: list):
         """
         MCX joint offset에서 읽은 값을 제어 루프 초기 위치로 설정.
-        _ctrl_ready=True 전에 호출해야 함.
+        _control_loop 시작 전 (연결 완료 후 1회) 호출해야 함.
         """
         with self._lock:
             self._last_cmd_pos  = list(positions[:N_AXES])
@@ -567,11 +582,12 @@ class MotionController:
             self._last_cmd_pos  = [0.0] * N_AXES
             self._interp_prev   = [0.0] * N_AXES
             self._interp_target = [0.0] * N_AXES
+        self._ctrl_state = 'STANDBY'
         self._idle_ev.set()
 
     def _on_busy_mode(self):
         self._idle_ev.clear()
-        self._ctrl_ready = False
+        self._ctrl_state = 'STANDBY'
 
     def _on_sitting(self):
         """Sitting 이벤트 → RL trot 비활성, sitting 동작 트리거."""
@@ -596,16 +612,15 @@ class MotionController:
         self._mcx.reset_fall_recovery_event()
 
     def _on_jump(self):
-        """jump=1 수신 — 실행 완료 후 event_loop에서 리셋 (콜백에서 blocking reset 금지)."""
-        if not self._in_movel:
+        """jump=1 수신 — EXEC_TRAJ 중이 아닐 때만 트리거."""
+        if self._ctrl_state != 'EXEC_TRAJ':
             self._jump_ev.set()
 
     def _on_home(self):
-        """home=1 수신 — forceS/forceT finally 블록에서 리셋."""
         self._home_ev.set()
 
     def _on_movel(self):
-        if not self._in_movel:
+        if self._ctrl_state != 'EXEC_TRAJ':
             self._movel_ev.set()
 
     def _on_force_s(self):
@@ -641,7 +656,7 @@ class MotionController:
         self.kf_grf = np.zeros(3)
 
     def _on_gait(self):
-        if not self._in_movel:
+        if self._ctrl_state != 'EXEC_TRAJ':
             self._gait_ev.set()
 
     def _event_loop(self, log_cb=None):
@@ -651,7 +666,7 @@ class MotionController:
                 if log_cb:
                     log_cb('JogMode/PauseMode 대기 중...')
                 self._idle_ev.wait()
-                self._ctrl_ready = True
+                self._ctrl_state = 'STANDBY'
                 if log_cb:
                     log_cb('제어권 획득 — 이벤트 수신 대기 중')
 
@@ -679,40 +694,31 @@ class MotionController:
 
             # ── [Leg_test] Jump ─────────────────────────────────────────────────
             elif self._jump_ev.is_set():
-                self._in_movel = True
                 self._jump_ev.clear()
                 if log_cb:
                     log_cb('Jump: 점프 궤적 실행')
-                self._send_cst(self._waypoints, self.traj_dt, 'jump', log_cb=log_cb)
+                self._load_exec_traj(self._waypoints, self.traj_dt, 'jump', log_cb=log_cb)
+                self._traj_done_ev.wait()
                 if log_cb:
                     log_cb('jump 완료.')
-                # 완료 후 재트리거 방지:
-                #   _in_movel=True 게이트 유지 → reset 전송(fire-and-forget) →
-                #   50ms sleep으로 MCX 버퍼 콜백 드레인 → clear → 게이트 해제
-                self._in_movel = True
                 self._mcx.reset_jump_event()
                 time.sleep(0.05)
                 self._jump_ev.clear()
-                self._in_movel = False
 
             # ── [Leg_test] Gait ─────────────────────────────────────────────────
             elif self._gait_ev.is_set():
                 self._gait_ev.clear()
-                self._in_movel = True
                 if log_cb:
                     log_cb('Gait: Bezier 발걸음 패턴 실행')
-                self._run_gait(log_cb=log_cb) # swing(4차베지어곡선)
-                # self._run_gait2(log_cb=log_cb) # swing1(5차베지어곡선) -> stance -> swing2(5차베지어곡선)
+                self._run_gait(log_cb=log_cb)
+                # self._run_gait2(log_cb=log_cb)
                 self._mcx.reset_gait_event()
                 time.sleep(0.05)
                 self._gait_ev.clear()
-                self._in_movel = False
 
             # ── [Leg_test] moveL ────────────────────────────────────────────────
             elif self._movel_ev.is_set():
                 self._movel_ev.clear()
-                self._in_movel = True
-
                 actual_j_mcx = self._mcx.actual_positions
                 actual_j_phy = _to_phy(actual_j_mcx)
                 p_cur        = np.array(forward_kinematics(actual_j_phy)[-1])
@@ -721,7 +727,6 @@ class MotionController:
                     self._last_cmd_pos = list(actual_j_mcx)
                     x_target = self._movel_target[0] if self._movel_target \
                         else (p_cur[0] + MOVEL_STEP_X, p_cur[1], p_cur[2] + MOVEL_STEP_Z)
-
                 if log_cb:
                     log_cb(
                         f'moveL(quintic, φ={math.degrees(phi):.1f}°): '
@@ -732,7 +737,6 @@ class MotionController:
                 self._mcx.reset_movel_event()
                 time.sleep(0.05)
                 self._movel_ev.clear()
-                self._in_movel = False
 
             elif self._force_t_active:
                 self._run_force_t_idle(log_cb=log_cb)
@@ -747,14 +751,9 @@ class MotionController:
     # ── forceT idle: 현재 위치 기준 GRF 제어 ────────────────────────────────
     def _run_force_t_idle(self, log_cb=None):
         """
-        forceT 단독 활성화 시 현재 위치 기준 GRF 제어 루프 (blocking).
-        _in_movel을 올리지 않으므로 moveL/gait/jump 이벤트 콜백 정상 수신.
-
-        tau_ff 옵션 (_force_grf_active 플래그):
-          True  → tau_ff = tau_dyn + tau_grf  (중력보상 + GRF 상쇄)
-          False → tau_ff = tau_dyn            (중력보상만)
-        forceS 동시 활성 시 tau_imp 추가.
-        종료: forceT OFF / moveL·gait·jump·home 이벤트
+        forceT 활성 시 stance 위치 기준 GRF 제어.
+        _control_loop의 FORCE_T_IDLE 상태로 위임 — 실제 200Hz 루프는 _control_loop가 실행.
+        종료: forceT OFF / moveL·gait·jump·home 이벤트 (_control_loop가 STANDBY로 전환)
         """
         q_a_phy = _to_phy(self._mcx.actual_positions)
         x_r     = np.array(forward_kinematics(q_a_phy)[-1])
@@ -765,7 +764,9 @@ class MotionController:
             if log_cb:
                 log_cb('forceT idle: IK 실패 — 중단')
             return
-        q_r_mcx = _to_mcx(q_r_phy)
+
+        self._stance_q_r_mcx = _to_mcx(q_r_phy)
+        self._stance_x_r     = x_r
 
         if log_cb:
             log_cb(
@@ -774,41 +775,9 @@ class MotionController:
                 f'  GRF={"ON" if self._force_grf_active else "OFF"}'
             )
 
-        dt       = self.traj_dt
-        x_a_prev = x_r.copy()
-
-        def _should_stop():
-            return (not self._force_t_active
-                    or self._movel_ev.is_set()
-                    or self._gait_ev.is_set()
-                    or self._jump_ev.is_set()
-                    or self._home_ev.is_set())
-
-        while not _should_stop():
-            t_next           = time.monotonic() + dt
-            q_now_phy        = _to_phy(self._mcx.actual_positions)
-            tau_dyn, J, x_a  = _fun_force_f(q_now_phy)
-            dx_a             = (x_a - x_a_prev) / dt
-            x_a_prev         = x_a.copy()
-
-            if self._force_grf_active:
-                grf_est = compute_grf(self._mcx.actual_torque, tau_dyn, J)
-                tau_ff  = tau_dyn + J.T @ (KF_GRF * (self.force_t_ref - grf_est))
-            else:
-                tau_ff  = tau_dyn.copy()
-
-            if self._force_s_active:
-                tau_imp = compute_impedance_torque(x_r, x_a, J, dx_a=dx_a)
-                tau = (tau_ff + tau_imp).tolist()
-            else:
-                tau = tau_ff.tolist()
-
-            self._mcx.set_target_positions(q_r_mcx)
-            self._mcx.set_target_torques(tau)
-
-            slack = t_next - time.monotonic()
-            if slack > 0:
-                time.sleep(slack)
+        self._ctrl_state = 'FORCE_T_IDLE'
+        while self._ctrl_state == 'FORCE_T_IDLE':
+            time.sleep(0.01)
 
         if log_cb:
             log_cb('forceT idle 종료')
@@ -831,8 +800,8 @@ class MotionController:
     # ── forceS idle: 현재 위치 임피던스 유지 ────────────────────────────────────
     def _run_force_s_idle(self, log_cb=None):
         """
-        forceS 단독 활성화 시 현재 위치 기준 임피던스 루프 (blocking).
-        _in_movel을 올리지 않으므로 moveL/gait/jump 이벤트 콜백 정상 수신.
+        forceS 단독 활성 시 stance 위치 기준 임피던스 루프.
+        _control_loop의 FORCE_S_IDLE 상태로 위임.
         종료: forceS OFF / moveL·gait·jump·forceT·home 이벤트
         """
         q_a_phy = _to_phy(self._mcx.actual_positions)
@@ -844,7 +813,9 @@ class MotionController:
             if log_cb:
                 log_cb('forceS idle: IK 실패 — 중단')
             return
-        q_r_mcx = _to_mcx(q_r_phy)
+
+        self._stance_q_r_mcx = _to_mcx(q_r_phy)
+        self._stance_x_r     = x_r
 
         if log_cb:
             log_cb(
@@ -852,37 +823,29 @@ class MotionController:
                 f'({x_r[0]*1e3:.1f}, {x_r[1]*1e3:.1f}, {x_r[2]*1e3:.1f}) mm'
             )
 
-        dt       = self.traj_dt
-        x_a_prev = x_r.copy()
-
-        def _should_stop():
-            return (not self._force_s_active
-                    or self._movel_ev.is_set()
-                    or self._gait_ev.is_set()
-                    or self._jump_ev.is_set()
-                    or self._force_t_active
-                    or self._home_ev.is_set())
-
-        while not _should_stop():
-            t_next           = time.monotonic() + dt
-            q_now_phy        = _to_phy(self._mcx.actual_positions)
-            tau_dyn, J, x_a  = _fun_force_f(q_now_phy)
-            dx_a             = (x_a - x_a_prev) / dt
-            x_a_prev         = x_a.copy()
-
-            grf_est = compute_grf(self._mcx.actual_torque, tau_dyn, J)
-            tau_imp = compute_impedance_torque(x_r, x_a, J, dx_a=dx_a)
-            tau     = (tau_dyn - J.T @ grf_est + tau_imp).tolist()
-
-            self._mcx.set_target_positions(q_r_mcx)
-            self._mcx.set_target_torques(tau)
-
-            slack = t_next - time.monotonic()
-            if slack > 0:
-                time.sleep(slack)
+        self._ctrl_state = 'FORCE_S_IDLE'
+        while self._ctrl_state == 'FORCE_S_IDLE':
+            time.sleep(0.01)
 
         if log_cb:
             log_cb('forceS idle 종료')
+
+    # ── 궤적 큐 적재 (비차단) ────────────────────────────────────────────────
+    def _load_exec_traj(self, waypoints, dt: float, label: str,
+                        cartesian_refs=None, log_cb=None):
+        """비차단: 큐 적재 후 EXEC_TRAJ 전환. 완료는 _traj_done_ev로 통보."""
+        wps = list(waypoints)
+        crs = list(cartesian_refs) if cartesian_refs is not None else []
+        if log_cb:
+            log_cb(f'{label} 큐 적재 ({len(wps)} pts / dt={dt*1e3:.1f}ms)')
+        self._traj_done_ev.clear()
+        with self._lock:
+            self._traj_queue     = deque(wps)
+            self._cart_queue     = deque(crs)
+            self._traj_dt_active = dt
+            self._traj_label     = label
+            self._traj_idx       = 0
+        self._ctrl_state = 'EXEC_TRAJ'
 
     # ── gait: Bezier 발걸음 패턴 ─────────────────────────────────────────────
     def _run_gait(self, log_cb=None):
@@ -991,94 +954,165 @@ class MotionController:
 
     def _send_cst(self, waypoints, dt: float, label: str,
                   cartesian_refs=None, stop_fn=None, log_cb=None):
-        """
-        joint 공간 waypoints를 MCX에 전송하는 단일 출력 경로 (blocking).
+        """_load_exec_traj + 완료 대기 (동기 wrapper). stop_fn 미지원."""
+        self._load_exec_traj(waypoints, dt, label,
+                             cartesian_refs=cartesian_refs, log_cb=log_cb)
+        self._traj_done_ev.wait()
 
-        waypoints      : iterable of list[float] [rad]        — q_r (MCX offset)
-        cartesian_refs : iterable of array-like [m] or None
-                         각 step의 발끝 목표 좌표 (힙 원점 기준).
-                         제공 시 매 step마다 FK/Jacobian/중력토크 계산.
-                         _force_s_active=True 이면 GRF+임피던스 토크 추가 적용.
-                         _force_s_active=False 이면 zero torque 전송.
-        stop_fn        : callable() → True 이면 루프 즉시 종료 (forceT 종료조건 등)
-        dt             : waypoint 간격 [s]
-        """
-        self._ctrl_ready = False
-        self._in_movel   = True
-
-        time.sleep(0.05)
-        try:
-            self._mcx.get_target_positions()
-        except Exception:
-            pass
-
+    # ── 단일 200Hz 제어 루프 (상태 머신) ─────────────────────────────────────
+    def _control_loop(self):
+        """STANDBY / EXEC_TRAJ / FORCE_T_IDLE / FORCE_S_IDLE / HOME"""
         zero_torque = [0.0] * N_AXES
-        _, _, x_a_prev = _fun_force_f(_to_phy(self._mcx.actual_positions))
+        x_a_prev    = np.zeros(3)
+        prev_state  = None
 
-        if log_cb:
-            log_cb(f'{label} 시작 / dt={dt*1000:.1f}ms'
-                   + (' / force_ref=ON' if cartesian_refs is not None else ''))
+        while True:
+            t_next = time.monotonic() + HOLD_CYCLE
 
-        t0 = time.monotonic()
+            if not self._mcx.is_connected:
+                slack = t_next - time.monotonic()
+                if slack > 0:
+                    time.sleep(slack)
+                continue
 
-        step_iter = (zip(waypoints, cartesian_refs)
-                     if cartesian_refs is not None
-                     else ((wp, None) for wp in waypoints))
+            state = self._ctrl_state
 
-        try:
-            for idx, (wp, x_r_cart) in enumerate(step_iter):
-                if stop_fn and stop_fn():
-                    break
+            if state != prev_state:
+                try:
+                    x_a_prev = _fun_force_f(_to_phy(self._mcx.actual_positions))[0]
+                except Exception:
+                    x_a_prev = np.zeros(3)
+                prev_state = state
 
-                wp = list(wp)
+            # ── STANDBY ──────────────────────────────────────────────────
+            if state == 'STANDBY':
+                with self._lock:
+                    if self._rl_trot_active:
+                        elapsed  = time.monotonic() - self._interp_time
+                        t_ratio  = min(elapsed / CMD_PERIOD, 1.0)
+                        positions = [
+                            self._interp_prev[i] + t_ratio * (self._interp_target[i] - self._interp_prev[i])
+                            for i in range(N_AXES)
+                        ]
+                    else:
+                        positions = list(self._last_cmd_pos)
+                try:
+                    self._mcx.set_target_positions(positions)
+                except Exception:
+                    pass
 
-                kp = self.kp_imp
-                kd = self.kd_imp
-                kf = self.kf_grf
+            # ── EXEC_TRAJ ────────────────────────────────────────────────
+            elif state == 'EXEC_TRAJ':
+                with self._lock:
+                    if self._traj_queue:
+                        wp       = list(self._traj_queue.popleft())
+                        x_r_cart = self._cart_queue.popleft() if self._cart_queue else None
+                        dt       = self._traj_dt_active
+                        self._traj_idx += 1
+                    else:
+                        wp = None
 
-                if np.any(kp) or np.any(kd) or np.any(kf):
-                    x_r = (np.asarray(x_r_cart)
-                           if x_r_cart is not None
-                           else np.array(forward_kinematics(_to_phy(wp))[-1]))
+                if wp is None:
+                    self._mcx.set_target_torques(zero_torque)
+                    with self._lock:
+                        self._interp_prev   = list(self._last_cmd_pos)
+                        self._interp_target = list(self._last_cmd_pos)
+                    self._ctrl_state = 'STANDBY'
+                    self._traj_done_ev.set()
+                else:
+                    kp = self.kp_imp
+                    kd = self.kd_imp
+                    kf = self.kf_grf
+
+                    if np.any(kp) or np.any(kd) or np.any(kf):
+                        x_r             = (np.asarray(x_r_cart) if x_r_cart is not None
+                                           else np.array(forward_kinematics(_to_phy(wp))[-1]))
+                        q_now_phy       = _to_phy(self._mcx.actual_positions)
+                        x_a, J, tau_dyn = _fun_force_f(q_now_phy)
+                        dx_a            = (x_a - x_a_prev) / dt
+                        x_a_prev        = x_a.copy()
+
+                        f_cart = kp * (x_r - x_a) - kd * dx_a
+                        if np.any(kf):
+                            grf_est = compute_grf(self._mcx.actual_torque, tau_dyn, J)
+                            f_cart += kf * (self.force_t_ref - grf_est)
+                        tau = (tau_dyn + J.T @ f_cart).tolist()
+                    else:
+                        q_now_phy = _to_phy(self._mcx.actual_positions)
+                        x_a_prev  = np.array(forward_kinematics(q_now_phy)[-1])
+                        tau       = zero_torque
+
+                    self._mcx.set_target_positions(wp)
+                    self._mcx.set_target_torques(tau)
+                    with self._lock:
+                        self._last_cmd_pos = wp
+
+            # ── FORCE_T_IDLE ─────────────────────────────────────────────
+            elif state == 'FORCE_T_IDLE':
+                if (not self._force_t_active
+                        or self._jump_ev.is_set()
+                        or self._gait_ev.is_set()
+                        or self._movel_ev.is_set()
+                        or self._home_ev.is_set()):
+                    self._mcx.set_target_torques(zero_torque)
+                    q_r_mcx = self._stance_q_r_mcx
+                    with self._lock:
+                        self._last_cmd_pos  = list(q_r_mcx)
+                        self._interp_prev   = list(q_r_mcx)
+                        self._interp_target = list(q_r_mcx)
+                    self._ctrl_state = 'STANDBY'
+                else:
+                    q_r_mcx         = self._stance_q_r_mcx
+                    x_r             = self._stance_x_r
                     q_now_phy       = _to_phy(self._mcx.actual_positions)
-                    tau_dyn, J, x_a = _fun_force_f(q_now_phy)
-                    dx_a            = (x_a - x_a_prev) / dt
+                    x_a, J, tau_dyn = _fun_force_f(q_now_phy)
+                    dx_a            = (x_a - x_a_prev) / HOLD_CYCLE
                     x_a_prev        = x_a.copy()
 
-                    f_cart = kp * (x_r - x_a) - kd * dx_a
-                    if np.any(kf):
+                    f_cart = self.kp_imp * (x_r - x_a) - self.kd_imp * dx_a
+                    if np.any(self.kf_grf):
                         grf_est = compute_grf(self._mcx.actual_torque, tau_dyn, J)
-                        f_cart += kf * (self.force_t_ref - grf_est)
+                        f_cart += self.kf_grf * (self.force_t_ref - grf_est)
 
                     tau = (tau_dyn + J.T @ f_cart).tolist()
+                    self._mcx.set_target_positions(q_r_mcx)
+                    self._mcx.set_target_torques(tau)
+
+            # ── FORCE_S_IDLE ─────────────────────────────────────────────
+            elif state == 'FORCE_S_IDLE':
+                if (not self._force_s_active
+                        or self._jump_ev.is_set()
+                        or self._gait_ev.is_set()
+                        or self._movel_ev.is_set()
+                        or self._force_t_active
+                        or self._home_ev.is_set()):
+                    self._mcx.set_target_torques(zero_torque)
+                    q_r_mcx = self._stance_q_r_mcx
+                    with self._lock:
+                        self._last_cmd_pos  = list(q_r_mcx)
+                        self._interp_prev   = list(q_r_mcx)
+                        self._interp_target = list(q_r_mcx)
+                    self._ctrl_state = 'STANDBY'
                 else:
-                    tau = zero_torque
+                    q_r_mcx         = self._stance_q_r_mcx
+                    x_r             = self._stance_x_r
+                    q_now_phy       = _to_phy(self._mcx.actual_positions)
+                    x_a, J, tau_dyn = _fun_force_f(q_now_phy)
+                    dx_a            = (x_a - x_a_prev) / HOLD_CYCLE
+                    x_a_prev        = x_a.copy()
 
-                self._mcx.set_target_positions(wp)
-                self._mcx.set_target_torques(tau)
-                with self._lock:
-                    self._last_cmd_pos = wp
+                    f_cart = self.kp_imp * (x_r - x_a) - self.kd_imp * dx_a
+                    tau = (tau_dyn + J.T @ f_cart).tolist()
+                    self._mcx.set_target_positions(q_r_mcx)
+                    self._mcx.set_target_torques(tau)
 
-                if log_cb and idx % max(1, int(1.0 / dt)) == 0:
-                    log_cb(
-                        f'{label} [{idx}] '
-                        + '  '.join(f'th{i+1}={math.degrees(wp[i]):+.2f}°'
-                                    for i in range(N_AXES))
-                    )
+            # ── HOME ─────────────────────────────────────────────────────
+            elif state == 'HOME':
+                pass   # move_to_home이 set_additive_positions로 직접 제어
 
-                sleep_t = t0 + (idx + 1) * dt - time.monotonic()
-                if sleep_t > 0:
-                    time.sleep(sleep_t)
-
-        finally:
-            self._mcx.set_target_torques(zero_torque)
-            self._in_movel = False
-            with self._lock:
-                self._interp_prev   = list(self._last_cmd_pos)
-                self._interp_target = list(self._last_cmd_pos)
-            self._ctrl_ready = True
-            if log_cb:
-                log_cb(f'{label} 완료 — interp loop 재개.')
+            slack = t_next - time.monotonic()
+            if slack > 0:
+                time.sleep(slack)
 
     # ── moveJ ─────────────────────────────────────────────────────────────────
     def move_j(self, joint_waypoints: list, dt: float = None,
@@ -1207,9 +1241,7 @@ class MotionController:
                             for i in range(N_AXES))
             )
 
-        self._ctrl_ready = False
-        self._in_movel   = True
-
+        self._ctrl_state = 'HOME'
         try:
             t0 = time.monotonic()
             for k, p in enumerate(profile):
@@ -1229,17 +1261,16 @@ class MotionController:
             correction = [-p for p in actual]
             self._mcx.set_additive_positions(correction, blocking=True)
 
-            # hostInJointPosition2도 0으로 동기화 — interp_loop 재개 시 원위치 복귀 방지
+            # hostInJointPosition2도 0으로 동기화
             self._mcx.set_target_positions([0.0] * N_AXES, blocking=True)
             with self._lock:
                 self._last_cmd_pos = [0.0] * N_AXES
 
         finally:
-            self._in_movel = False
             with self._lock:
                 self._interp_prev   = [0.0] * N_AXES
                 self._interp_target = [0.0] * N_AXES
-            self._ctrl_ready = True
+            self._ctrl_state = 'STANDBY'
 
     # ── tracking 모드: 외부 명령 수신 ─────────────────────────────────────────
     def set_command(self,
@@ -1277,40 +1308,6 @@ class MotionController:
             self._cmd_kd  = list(kd)  if kd  is not None else [0.5]  * N_AXES
             self._cmd_tau = list(tau) if tau is not None else [0.0]  * N_AXES
             self._last_cmd_pos = list(q)
-
-    # ── 보간 루프 (200 Hz) ────────────────────────────────────────────
-    def _interp_loop(self):
-        """
-        제어 모드에 따라 200 Hz 로 MCX 에 위치 전송.
-
-          standby  : 마지막 위치 유지
-          tracking : prev → target 선형 보간
-          mpc      : 추후 구현 (현재는 standby와 동일하게 동작)
-        """
-        while True:
-            if not self._ctrl_ready or not self._mcx.is_connected:
-                time.sleep(0.01)
-                continue
-
-            with self._lock:
-                if self._rl_trot_active:
-                    # RL_trot: 외부 low_cmd 추종 — prev → target 선형 보간 (50Hz → 200Hz)
-                    elapsed = time.monotonic() - self._interp_time
-                    t = min(elapsed / CMD_PERIOD, 1.0)
-                    positions = [
-                        self._interp_prev[i] + t * (self._interp_target[i] - self._interp_prev[i])
-                        for i in range(N_AXES)
-                    ]
-                else:
-                    # Sitting / Standing / Leg_test: 마지막 명령 위치 유지
-                    positions = list(self._last_cmd_pos)
-
-            try:
-                self._mcx.set_target_positions(positions)
-            except Exception:
-                pass
-
-            time.sleep(HOLD_CYCLE)
 
     def get_monitor_snapshot(self) -> list:
         """모니터 로그용: [(tgt_rad, act_rad), ...] for ch0~ch3."""
