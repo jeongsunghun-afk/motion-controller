@@ -47,6 +47,7 @@ HOME_EVENT_PATH          = 'root/UserParameters/home'
 MOVE_L_EVENT_PATH        = 'root/UserParameters/moveL'
 FORCE_S_EVENT_PATH       = 'root/UserParameters/forceS'
 FORCE_T_EVENT_PATH       = 'root/UserParameters/forceT'
+FORCE_F_EVENT_PATH       = 'root/UserParameters/forceF'
 GAIT_EVENT_PATH          = 'root/UserParameters/gait'
 SITTING_EVENT_PATH       = 'root/UserParameters/Sitting'
 STANDING_EVENT_PATH      = 'root/UserParameters/Standing'
@@ -302,6 +303,13 @@ class MotorcortexInterface:
 
     def reset_force_t_event(self):
         self._reset_event(FORCE_T_EVENT_PATH)
+
+    def subscribe_force_f_event(self, on_start: callable, on_stop: callable = None):
+        """forceF 레벨 구독: value=1 → on_start (GRF 피드백 ON), value=0 → on_stop."""
+        self._subscribe_level_event(FORCE_F_EVENT_PATH, 'forcef_group', on_start, on_stop)
+
+    def reset_force_f_event(self):
+        self._reset_event(FORCE_F_EVENT_PATH)
 
     def subscribe_gait_event(self, cb: callable):
         self._subscribe_event(GAIT_EVENT_PATH, 'gait_group', cb)

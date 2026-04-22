@@ -24,6 +24,7 @@ ROS2 의존성 없음 — joint_state_bridge 에서 생성하여 사용
   gait          — Bezier 발걸음 패턴 (이전 moveL 구현)
   moveL         — Cartesian quintic polynomial 직선 이동
   forceT        — 발끝 고정 + 실측 토크 → GRF 추정 임피던스 제어
+  forceF        — forceT 내 GRF 피드백 ON/OFF (레벨 신호, forceT 활성 시 유효)
   forceS        — moveL 임피던스 모드 토글 (ON시 moveL에 GRF+임피던스 토크 추가)
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -207,18 +208,19 @@ def _fun_force_f(thetas: list):
 
 def compute_grf(tau_actual, tau_gravity, J: np.ndarray) -> np.ndarray:
     """
-    실제 관절 토크로부터 지면반력(GRF) 추정 (leg_sim_v4.py 동기화).
-    λ = (J·Jᵀ + μI)⁻¹ · J · (τ_gravity - τ_actual)  [N]
+    실제 관절 토크로부터 지면반력(GRF) 추정.
+    τ_GRF,a = τ_actual - τ_gravity   (합력 토크 = 중력토크 + GRF 기여분)
+    F_GRF   = (J·Jᵀ + μI)⁻¹ · J · τ_GRF,a  [N]
 
-    tau_actual  : 실측 관절 토크 [Nm]  (N_AXES,) — actuatorTorqueActual
-    tau_gravity : 중력 보상 토크  [Nm]  (N_AXES,) — compute_gravity_torque()
+    tau_actual  : 실측 관절 합력 토크 [Nm]  (N_AXES,) — actuatorTorqueActual
+    tau_gravity : 중력 보상 토크      [Nm]  (N_AXES,) — compute_gravity_torque()
     J           : 자코비안 (3, N_AXES) — compute_jacobian()
-    반환        : GRF 추정값 [N]  (3,)  — [Fx, Fy, Fz]
+    반환        : GRF 추정값 [N]  (3,)  — [Fx, Fy, Fz]  (+X=위 기준, 지면 접촉 시 양수)
     """
     tau_a = np.asarray(tau_actual,  dtype=float)
     tau_g = np.asarray(tau_gravity, dtype=float)
     JJT   = J @ J.T + MU_DAMP * np.eye(3)
-    return np.linalg.solve(JJT, J @ (tau_g - tau_a))
+    return np.linalg.solve(JJT, J @ (tau_a - tau_g))
 
 
 def compute_impedance_torque(x_r, x_a, J: np.ndarray,
@@ -527,6 +529,7 @@ class MotionController:
         self._mcx.reset_movel_event()
         self._mcx.reset_force_s_event()
         self._mcx.reset_force_t_event()
+        self._mcx.reset_force_f_event()
         self._mcx.reset_gait_event()
 
         # 이벤트 구독
@@ -542,6 +545,7 @@ class MotionController:
         self._mcx.subscribe_movel_event(self._on_movel)
         self._mcx.subscribe_force_s_event(self._on_force_s)
         self._mcx.subscribe_force_t_event(self._on_force_t_start, self._on_force_t_stop)
+        self._mcx.subscribe_force_f_event(self._on_force_f_start, self._on_force_f_stop)
         self._mcx.subscribe_gait_event(self._on_gait)
 
         self._event_thread = threading.Thread(
@@ -612,6 +616,15 @@ class MotionController:
     def _on_force_t_stop(self):
         """forceT=0 수신 — GRF 제어 종료."""
         self._force_t_active = False
+
+    def _on_force_f_start(self):
+        """forceF=1 수신 — GRF 피드백 ON (tau_dyn + tau_grf)."""
+        self._force_grf_active = True
+        self._mcx.reset_force_f_event()
+
+    def _on_force_f_stop(self):
+        """forceF=0 수신 — GRF 피드백 OFF (tau_dyn only)."""
+        self._force_grf_active = False
 
     def _on_gait(self):
         if not self._in_movel:
@@ -730,7 +743,7 @@ class MotionController:
         종료: forceT OFF / moveL·gait·jump·home 이벤트
         """
         q_a_phy = _to_phy(self._mcx.actual_positions)
-        tau_dyn, J, x_r = _fun_force_f(q_a_phy)
+        x_r     = np.array(forward_kinematics(q_a_phy)[-1])
         phi     = q_a_phy[1] + q_a_phy[2] + q_a_phy[3]
 
         q_r_phy = analytical_ik(x_r[0], x_r[1], x_r[2], phi)
@@ -758,6 +771,7 @@ class MotionController:
                     or self._home_ev.is_set())
 
         while not _should_stop():
+            t_next           = time.monotonic() + dt
             q_now_phy        = _to_phy(self._mcx.actual_positions)
             tau_dyn, J, x_a  = _fun_force_f(q_now_phy)
             dx_a             = (x_a - x_a_prev) / dt
@@ -778,8 +792,7 @@ class MotionController:
             self._mcx.set_target_positions(q_r_mcx)
             self._mcx.set_target_torques(tau)
 
-            t_next = time.monotonic() + dt
-            slack  = t_next - time.monotonic()
+            slack = t_next - time.monotonic()
             if slack > 0:
                 time.sleep(slack)
 
@@ -837,6 +850,7 @@ class MotionController:
                     or self._home_ev.is_set())
 
         while not _should_stop():
+            t_next           = time.monotonic() + dt
             q_now_phy        = _to_phy(self._mcx.actual_positions)
             tau_dyn, J, x_a  = _fun_force_f(q_now_phy)
             dx_a             = (x_a - x_a_prev) / dt
@@ -849,8 +863,7 @@ class MotionController:
             self._mcx.set_target_positions(q_r_mcx)
             self._mcx.set_target_torques(tau)
 
-            t_next = time.monotonic() + dt
-            slack  = t_next - time.monotonic()
+            slack = t_next - time.monotonic()
             if slack > 0:
                 time.sleep(slack)
 
@@ -869,8 +882,6 @@ class MotionController:
         phi   = actual_j_phy[1] + actual_j_phy[2] + actual_j_phy[3]
         with self._lock:
             self._last_cmd_pos = list(actual_j_mcx)
-
-        with self._lock:
             gp_start = self._gait_p_start
             gp_end   = self._gait_p_end
 
@@ -989,12 +1000,15 @@ class MotionController:
 
         zero_torque = [0.0] * N_AXES
 
-        # 발끝 속도 추정용 초기값
-        _, _, x_a_prev = _fun_force_f(_to_phy(self._mcx.actual_positions))
+        # 발끝 속도 추정용 초기값 (cartesian_refs 없는 경우 미사용)
+        if cartesian_refs is not None:
+            _, _, x_a_prev = _fun_force_f(_to_phy(self._mcx.actual_positions))
+        else:
+            x_a_prev = np.zeros(3)
 
         if log_cb:
             log_cb(f'{label} 시작 / dt={dt*1000:.1f}ms'
-                   + (' / force_ref=O' if cartesian_refs is not None else ''))
+                   + (' / force_ref=ON' if cartesian_refs is not None else ''))
 
         t0 = time.monotonic()
 
