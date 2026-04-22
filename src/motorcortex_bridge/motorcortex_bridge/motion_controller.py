@@ -82,6 +82,7 @@ def _to_mcx(phy_j: list) -> list:
 # ── 임피던스 제어 게인 (leg_sim_v4.py 동기화) ─────────────────────────────────
 KP_IMP  = np.array([800.0, 800.0, 800.0])   # Cartesian 강성 [N/m]
 KD_IMP  = np.array([ 40.0,  40.0,  40.0])   # Cartesian 감쇠 [N·s/m]
+KF_GRF  = np.array([  0.1,   0.1,   0.1])   # forceT GRF 피드백 게인 (무차원, force error → N)
 MU_DAMP = 1e-3                               # Jacobian 댐핑 계수 (특이점 방지)
 
 # ── DH 파라미터 (leg_sim_v4.py 동기화) ─────────────────────────────────────────
@@ -176,15 +177,15 @@ def compute_gravity_torque(thetas: list) -> np.ndarray:
     return tau_g
 
 
-def _compute_kinematics(thetas: list):
+def _fun_force_f(thetas: list):
     """
-    단일 DH 패스로 FK / Jacobian / 중력 토크를 동시 계산.
+    동역학 계산 (단일 DH 패스): FK / Jacobian / 중력 토크.
     forceS / forceT 200Hz 루프에서 DH 행렬 중복 계산 방지용.
 
-    반환: (x_foot, J, tau_g)
-      x_foot : 발끝 위치 [m]       (3,) ndarray
-      J      : 위치 자코비안 (3, N_AXES)
-      tau_g  : 중력 보상 토크 [Nm] (N_AXES,)
+    반환: (x_foot, J, tau_dyn)
+      x_foot  : 발끝 위치 [m]        (3,) ndarray
+      J       : 위치 자코비안 (3, N_AXES)
+      tau_dyn : 중력 보상 토크 [Nm]  (N_AXES,)
     """
     origins, z_axes = _get_origins_zaxes(thetas)
     pe = origins[-1]
@@ -443,9 +444,10 @@ class MotionController:
         self._jump_ev          = threading.Event()   # 점프 궤적
         self._home_ev          = threading.Event()   # 홈 복귀
         self._movel_ev         = threading.Event()   # moveL
-        self._force_t_active   = False               # forceT 제어 활성 플래그 (value=1 시작, 0 종료)
-        self._force_t_start_ev = threading.Event()   # forceT=1 수신 → event_loop 기동 신호
-        self._force_s_active   = False               # moveL 임피던스 모드 토글 (forceS 버튼)
+        self._force_t_active   = False        # forceT 활성 플래그 (signal=1 → True, 0 → False)
+        self._force_grf_active = False        # GRF 피드백 포함 여부: True=tau_dyn+tau_grf / False=tau_dyn only
+        self.force_t_ref       = np.zeros(3)  # forceT 목표 GRF [N] (힙 원점 기준, 초기=0 → GRF 상쇄)
+        self._force_s_active   = False        # forceS 임피던스 토글
         self._gait_ev          = threading.Event()   # Gait
 
         # moveL 목표 좌표 (힙 원점 기준, [m])  — 외부에서 set_movel_target()으로 설정
@@ -603,10 +605,9 @@ class MotionController:
         self._mcx.reset_force_s_event()
 
     def _on_force_t_start(self):
-        """forceT=1 수신 — GRF 제어 시작."""
-        if not self._in_movel:
-            self._force_t_active = True
-            self._force_t_start_ev.set()
+        """forceT=1 수신 — GRF 제어 시작 (동작 중에도 즉시 활성)."""
+        self._force_t_active = True
+        self._mcx.reset_force_t_event()
 
     def _on_force_t_stop(self):
         """forceT=0 수신 — GRF 제어 종료."""
@@ -706,70 +707,84 @@ class MotionController:
                 self._movel_ev.clear()
                 self._in_movel = False
 
-            # ── [Leg_test] ForceT ───────────────────────────────────────────────
-            elif self._force_t_start_ev.is_set():
-                self._force_t_start_ev.clear()
-                if log_cb:
-                    log_cb('ForceT: 발끝 고정 + 실측 토크 → GRF 추정 시작')
-                self._run_force_t(log_cb=log_cb)
-                if log_cb:
-                    log_cb('forceT 완료.')
+            elif self._force_t_active:
+                self._run_force_t_idle(log_cb=log_cb)
+
+            elif self._force_s_active:
+                self._run_force_s_idle(log_cb=log_cb)
 
             else:
                 time.sleep(0.01)
 
 
-    # ── forceT: 발끝 고정 + GRF 추정 — _send_cst 경유 ──────────────────────
-    def _run_force_t(self, log_cb=None):
+    # ── forceT idle: 현재 위치 기준 GRF 제어 ────────────────────────────────
+    def _run_force_t_idle(self, log_cb=None):
         """
-        발끝 고정 위치 유지 + GRF 추정 임피던스 제어 루프 (blocking).
-        _send_cst를 통해 위치+토크를 단일 경로로 전송.
+        forceT 단독 활성화 시 현재 위치 기준 GRF 제어 루프 (blocking).
+        _in_movel을 올리지 않으므로 moveL/gait/jump 이벤트 콜백 정상 수신.
 
-        forceS(_force_s_active) 플래그를 실시간으로 체크하므로
-        forceT 실행 중에도 forceS ON/OFF 가능.
-        종료: forceT=0(_force_t_active=False) / HomeEvent / JumpEvent
+        tau_ff 옵션 (_force_grf_active 플래그):
+          True  → tau_ff = tau_dyn + tau_grf  (중력보상 + GRF 상쇄)
+          False → tau_ff = tau_dyn            (중력보상만)
+        forceS 동시 활성 시 tau_imp 추가.
+        종료: forceT OFF / moveL·gait·jump·home 이벤트
         """
         q_a_phy = _to_phy(self._mcx.actual_positions)
-        x_a     = np.array(forward_kinematics(q_a_phy)[-1])
-        x_r     = x_a.copy()
+        tau_dyn, J, x_r = _fun_force_f(q_a_phy)
         phi     = q_a_phy[1] + q_a_phy[2] + q_a_phy[3]
 
         q_r_phy = analytical_ik(x_r[0], x_r[1], x_r[2], phi)
         if q_r_phy is None:
             if log_cb:
-                log_cb('forceT: IK 실패 — 중단')
+                log_cb('forceT idle: IK 실패 — 중단')
             return
         q_r_mcx = _to_mcx(q_r_phy)
 
         if log_cb:
             log_cb(
-                f'forceT 시작: x_r=({x_r[0]*1000:.1f}, {x_r[1]*1000:.1f},'
-                f' {x_r[2]*1000:.1f}) mm'
+                f'forceT idle 시작: '
+                f'({x_r[0]*1e3:.1f}, {x_r[1]*1e3:.1f}, {x_r[2]*1e3:.1f}) mm'
+                f'  GRF={"ON" if self._force_grf_active else "OFF"}'
             )
 
-        # _send_cst 호출: 무한 반복 waypoint + stop_fn으로 종료 제어
-        self._send_cst(
-            itertools.repeat(q_r_mcx),
-            self.traj_dt,
-            'forceT',
-            cartesian_refs=itertools.repeat(x_r),
-            stop_fn=lambda: (not self._force_t_active
-                             or self._home_ev.is_set()
-                             or self._jump_ev.is_set()),
-            log_cb=log_cb,
-        )
+        dt       = self.traj_dt
+        x_a_prev = x_r.copy()
 
-        # ── 종료 후 드레인 (home/jump 이벤트 콜백 재진입 방지) ───────────────
-        self._force_t_active = False
-        self._in_movel = True          # 드레인 기간 게이트 유지
-        self._mcx.reset_home_event()
-        self._mcx.reset_force_t_event()
-        time.sleep(0.05)
-        self._force_t_start_ev.clear()
-        self._home_ev.clear()
-        self._in_movel = False
+        def _should_stop():
+            return (not self._force_t_active
+                    or self._movel_ev.is_set()
+                    or self._gait_ev.is_set()
+                    or self._jump_ev.is_set()
+                    or self._home_ev.is_set())
+
+        while not _should_stop():
+            q_now_phy        = _to_phy(self._mcx.actual_positions)
+            tau_dyn, J, x_a  = _fun_force_f(q_now_phy)
+            dx_a             = (x_a - x_a_prev) / dt
+            x_a_prev         = x_a.copy()
+
+            if self._force_grf_active:
+                grf_est = compute_grf(self._mcx.actual_torque, tau_dyn, J)
+                tau_ff  = tau_dyn + J.T @ (KF_GRF * (self.force_t_ref - grf_est))
+            else:
+                tau_ff  = tau_dyn.copy()
+
+            if self._force_s_active:
+                tau_imp = compute_impedance_torque(x_r, x_a, J, dx_a=dx_a)
+                tau = (tau_ff + tau_imp).tolist()
+            else:
+                tau = tau_ff.tolist()
+
+            self._mcx.set_target_positions(q_r_mcx)
+            self._mcx.set_target_torques(tau)
+
+            t_next = time.monotonic() + dt
+            slack  = t_next - time.monotonic()
+            if slack > 0:
+                time.sleep(slack)
+
         if log_cb:
-            log_cb('forceT 종료 — 토크 오프셋 초기화')
+            log_cb('forceT idle 종료')
 
     # ── IK 루프 공통 헬퍼 ────────────────────────────────────────────────────
     def _ik_trajectory(self, cart_pts, phi: float, prev_phy: list,
@@ -785,6 +800,62 @@ class MotionController:
             prev_phy = r
             dense_j.append(_to_mcx(r))
         return dense_j
+
+    # ── forceS idle: 현재 위치 임피던스 유지 ────────────────────────────────────
+    def _run_force_s_idle(self, log_cb=None):
+        """
+        forceS 단독 활성화 시 현재 위치 기준 임피던스 루프 (blocking).
+        _in_movel을 올리지 않으므로 moveL/gait/jump 이벤트 콜백 정상 수신.
+        종료: forceS OFF / moveL·gait·jump·forceT·home 이벤트
+        """
+        q_a_phy = _to_phy(self._mcx.actual_positions)
+        x_r     = np.array(forward_kinematics(q_a_phy)[-1])
+        phi     = q_a_phy[1] + q_a_phy[2] + q_a_phy[3]
+
+        q_r_phy = analytical_ik(x_r[0], x_r[1], x_r[2], phi)
+        if q_r_phy is None:
+            if log_cb:
+                log_cb('forceS idle: IK 실패 — 중단')
+            return
+        q_r_mcx = _to_mcx(q_r_phy)
+
+        if log_cb:
+            log_cb(
+                f'forceS idle 시작: '
+                f'({x_r[0]*1e3:.1f}, {x_r[1]*1e3:.1f}, {x_r[2]*1e3:.1f}) mm'
+            )
+
+        dt       = self.traj_dt
+        x_a_prev = x_r.copy()
+
+        def _should_stop():
+            return (not self._force_s_active
+                    or self._movel_ev.is_set()
+                    or self._gait_ev.is_set()
+                    or self._jump_ev.is_set()
+                    or self._force_t_active
+                    or self._home_ev.is_set())
+
+        while not _should_stop():
+            q_now_phy        = _to_phy(self._mcx.actual_positions)
+            tau_dyn, J, x_a  = _fun_force_f(q_now_phy)
+            dx_a             = (x_a - x_a_prev) / dt
+            x_a_prev         = x_a.copy()
+
+            grf_est = compute_grf(self._mcx.actual_torque, tau_dyn, J)
+            tau_imp = compute_impedance_torque(x_r, x_a, J, dx_a=dx_a)
+            tau     = (tau_dyn - J.T @ grf_est + tau_imp).tolist()
+
+            self._mcx.set_target_positions(q_r_mcx)
+            self._mcx.set_target_torques(tau)
+
+            t_next = time.monotonic() + dt
+            slack  = t_next - time.monotonic()
+            if slack > 0:
+                time.sleep(slack)
+
+        if log_cb:
+            log_cb('forceS idle 종료')
 
     # ── gait: Bezier 발걸음 패턴 ─────────────────────────────────────────────
     def _run_gait(self, log_cb=None):
@@ -918,8 +989,8 @@ class MotionController:
 
         zero_torque = [0.0] * N_AXES
 
-        # 발끝 속도 추정용 초기값 (forceS 실시간 전환 시 연속성 보장)
-        x_a_prev, _, _ = _compute_kinematics(_to_phy(self._mcx.actual_positions))
+        # 발끝 속도 추정용 초기값
+        _, _, x_a_prev = _fun_force_f(_to_phy(self._mcx.actual_positions))
 
         if log_cb:
             log_cb(f'{label} 시작 / dt={dt*1000:.1f}ms'
@@ -939,19 +1010,28 @@ class MotionController:
                 wp = list(wp)
 
                 if x_r_cart is not None:
-                    # cartesian_refs 있음 → FK/J/τ_g 항상 계산 (forceS 전환 대비)
-                    q_now_phy     = _to_phy(self._mcx.actual_positions)
-                    x_a, J, tau_g = _compute_kinematics(q_now_phy)
-                    dx_a          = (x_a - x_a_prev) / dt
-                    x_a_prev      = x_a.copy()
+                    q_now_phy         = _to_phy(self._mcx.actual_positions)
+                    tau_dyn, J, x_a   = _fun_force_f(q_now_phy)
+                    dx_a              = (x_a - x_a_prev) / dt
+                    x_a_prev          = x_a.copy()
 
-                    if self._force_s_active:
-                        # τ_off = τ_g − τ_grf + τ_imp
-                        tau_actual = self._mcx.actual_torque
-                        grf_est    = compute_grf(tau_actual, tau_g, J)
-                        tau_imp    = compute_impedance_torque(
-                                         np.asarray(x_r_cart), x_a, J, dx_a=dx_a)
-                        tau = (tau_g - J.T @ grf_est + tau_imp).tolist()
+                    if self._force_t_active:
+                        if self._force_grf_active:
+                            grf_est = compute_grf(self._mcx.actual_torque, tau_dyn, J)
+                            tau_ff  = tau_dyn + J.T @ (KF_GRF * (self.force_t_ref - grf_est))
+                        else:
+                            tau_ff  = tau_dyn.copy()
+                        if self._force_s_active:
+                            tau_imp = compute_impedance_torque(
+                                          np.asarray(x_r_cart), x_a, J, dx_a=dx_a)
+                            tau = (tau_ff + tau_imp).tolist()
+                        else:
+                            tau = tau_ff.tolist()
+                    elif self._force_s_active:
+                        grf_est = compute_grf(self._mcx.actual_torque, tau_dyn, J)
+                        tau_imp = compute_impedance_torque(
+                                      np.asarray(x_r_cart), x_a, J, dx_a=dx_a)
+                        tau = (tau_dyn - J.T @ grf_est + tau_imp).tolist()
                     else:
                         tau = zero_torque
                 else:
