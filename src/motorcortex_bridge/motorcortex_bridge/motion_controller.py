@@ -906,7 +906,8 @@ class MotionController:
                 f'{n}pts / chord={chord*1e3:.1f}mm / dt={dt*1e3:.1f}ms'
             )
 
-        self._send_cst(dense_j, dt, 'gait', cartesian_refs=bezier_pts, log_cb=log_cb)
+        self._load_exec_traj(dense_j, dt, 'gait', cartesian_refs=bezier_pts, log_cb=log_cb)
+        self._traj_done_ev.wait()
 
     # ── gait2: 5차 Bezier 2단계 + forceS δ 임피던스 ─────────────────────────
     def _run_gait2(self, log_cb=None):
@@ -958,7 +959,8 @@ class MotionController:
             dense_j = self._ik_trajectory(pts, phi, j_phy, log_cb=log_cb, label=label)
             if log_cb:
                 log_cb(f'{label}: {n}pts / chord={chord*1e3:.1f}mm')
-            self._send_cst(dense_j, dt, label, cartesian_refs=pts, log_cb=log_cb)
+            self._load_exec_traj(dense_j, dt, label, cartesian_refs=pts, log_cb=log_cb)
+            self._traj_done_ev.wait()
             return _to_phy(self._mcx.actual_positions)
 
         # ── Leave-off (KP=0, KD=0, KF=0) ────────────────────────────────────
@@ -995,13 +997,6 @@ class MotionController:
     # ── 궤적 실행 공통 내부 함수 ──────────────────────────────────────────────
     def load_trajectory(self) -> list:
         return load_trajectory(self.traj_file)
-
-    def _send_cst(self, waypoints, dt: float, label: str,
-                  cartesian_refs=None, stop_fn=None, log_cb=None):
-        """_load_exec_traj + 완료 대기 (동기 wrapper). stop_fn 미지원."""
-        self._load_exec_traj(waypoints, dt, label,
-                             cartesian_refs=cartesian_refs, log_cb=log_cb)
-        self._traj_done_ev.wait()
 
     # ── 단일 200Hz 제어 루프 (상태 머신) ─────────────────────────────────────
     def _control_loop(self):
@@ -1200,14 +1195,15 @@ class MotionController:
             for k in range(n_pts):
                 dense.append([segs[i][k] for i in range(N_AXES)])
 
-        self._send_cst(dense, dt, 'moveJ', log_cb=log_cb)
+        self._load_exec_traj(dense, dt, 'moveJ', log_cb=log_cb)
+        self._traj_done_ev.wait()
 
     # ── moveL ─────────────────────────────────────────────────────────────────
     def move_l(self, x_target, phi: float = None, v0=None, vf=None,
                duration: float = None, dt: float = None, log_cb=None):
         """
         Cartesian 공간 quintic polynomial 직선 이동 (blocking).
-        forceS 임피던스 적용 여부는 _force_s_active 플래그로 실시간 제어 (_send_cst 내부).
+        forceS 임피던스 적용 여부는 _force_s_active 플래그로 실시간 제어 (control_loop 내부).
 
         x_target  : (Px, Py, Pz) [m] — 발끝 목표 좌표 (힙 원점 기준)
         phi       : θ2+θ3+θ4 유지 각도 [rad]. None이면 현재 관절값에서 자동 계산.
@@ -1252,8 +1248,8 @@ class MotionController:
                 f' / T={duration:.2f}s / dt={dt*1e3:.1f}ms'
             )
 
-        # cart_pts를 cartesian_refs로 전달 — _send_cst가 forceS 실시간 체크
-        self._send_cst(dense_j, dt, 'moveL', cartesian_refs=cart_pts, log_cb=log_cb)
+        self._load_exec_traj(dense_j, dt, 'moveL', cartesian_refs=cart_pts, log_cb=log_cb)
+        self._traj_done_ev.wait()
 
     # ── 홈 복귀 궤적 ─────────────────────────────────────────────────────────────
     def move_to_home(self, max_vel: float = HOME_MAX_VEL,
