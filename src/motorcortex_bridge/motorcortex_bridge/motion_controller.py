@@ -667,7 +667,7 @@ class MotionController:
         self.kf_grf = np.zeros(3)
 
     def _on_gait(self):
-        if self._ctrl_state != 'EXEC_TRAJ':
+        if self._ctrl_state not in ('EXEC_TRAJ', 'HOME'):
             self._gait_ev.set()
 
     def _event_loop(self, log_cb=None):
@@ -1129,8 +1129,7 @@ class MotionController:
                         f_cart += self.kf_grf * (self.force_t_ref - grf_est)
 
                     tau = (tau_dyn + J.T @ f_cart).tolist()
-                    self._mcx.set_target_positions(q_r_mcx)
-                    self._mcx.set_target_torques(tau)
+                    self._mcx.set_pos_and_torque(q_r_mcx, tau)
 
             # ── FORCE_S_IDLE ─────────────────────────────────────────────
             elif state == 'FORCE_S_IDLE':
@@ -1152,8 +1151,7 @@ class MotionController:
 
                     f_cart = self.kp_imp * (x_r - x_a) - self.kd_imp * dx_a
                     tau = (tau_dyn + J.T @ f_cart).tolist()
-                    self._mcx.set_target_positions(q_r_mcx)
-                    self._mcx.set_target_torques(tau)
+                    self._mcx.set_pos_and_torque(q_r_mcx, tau)
 
             # ── HOME ─────────────────────────────────────────────────────
             elif state == 'HOME':
