@@ -692,6 +692,16 @@ class MotionController:
                     log_cb('Fall Recovery: 낙상 복구 (TODO)')
                 # TODO: fall recovery 궤적 실행
 
+            # ── [Leg_test] Home ─────────────────────────────────────────────────
+            elif self._home_ev.is_set():
+                self._home_ev.clear()
+                if log_cb:
+                    log_cb('Home: 홈 포지션 복귀')
+                self.move_to_home(log_cb=log_cb)
+                self._mcx.reset_home_event()
+                time.sleep(0.05)
+                self._home_ev.clear()
+
             # ── [Leg_test] Jump ─────────────────────────────────────────────────
             elif self._jump_ev.is_set():
                 self._jump_ev.clear()
@@ -1003,14 +1013,20 @@ class MotionController:
 
             # ── EXEC_TRAJ ────────────────────────────────────────────────
             elif state == 'EXEC_TRAJ':
-                with self._lock:
-                    if self._traj_queue:
-                        wp       = list(self._traj_queue.popleft())
-                        x_r_cart = self._cart_queue.popleft() if self._cart_queue else None
-                        dt       = self._traj_dt_active
-                        self._traj_idx += 1
-                    else:
-                        wp = None
+                if self._home_ev.is_set():
+                    with self._lock:
+                        self._traj_queue.clear()
+                        self._cart_queue.clear()
+                    wp = None
+                else:
+                    with self._lock:
+                        if self._traj_queue:
+                            wp       = list(self._traj_queue.popleft())
+                            x_r_cart = self._cart_queue.popleft() if self._cart_queue else None
+                            dt       = self._traj_dt_active
+                            self._traj_idx += 1
+                        else:
+                            wp = None
 
                 if wp is None:
                     self._mcx.set_target_torques(zero_torque)
