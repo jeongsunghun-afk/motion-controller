@@ -7,8 +7,8 @@ ROS2 의존성 없음 — joint_state_bridge 에서 생성하여 사용
 동작 흐름 (JogMode=0 & PauseMode=0 진입 후)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   [정상 운용 시퀀스]
-    Sitting → Standing → RL_trot
-    Fall Recovery → Sitting 복귀
+    IdleMode → STANDBY → (sitting 궤적) → STANDING → (standing 궤적) → RL_trot
+    Fall Recovery → STANDBY 복귀
 
   [Leg_test 이벤트]
     Jump, Gait, moveL, ForceT, ForceS
@@ -16,8 +16,8 @@ ROS2 의존성 없음 — joint_state_bridge 에서 생성하여 사용
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 이벤트 경로 (GRID root/UserParameters/*)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  Sitting       — sitting 자세 전환
-  Standing      — standing 자세 전환
+  Sitting       — sitting 자세 전환 (→ STANDBY)
+  Standing      — standing 자세 전환 (→ STANDING)
   RL_trot       — RL 명령 추종 (50Hz → 200Hz 선형 보간)
   Fall recovery — 낙상 복구
   jump          — 점프 궤적 실행 (.txt)
@@ -86,6 +86,13 @@ KP_IMP  = np.array([800.0, 800.0, 800.0])   # Cartesian 강성 [N/m]
 KD_IMP  = np.array([ 40.0,  40.0,  40.0])   # Cartesian 감쇠 [N·s/m]
 KF_GRF  = np.array([  0.1,   0.1,   0.1])   # forceT GRF 피드백 게인 (무차원, force error → N)
 MU_DAMP = 1e-3                               # Jacobian 댐핑 계수 (특이점 방지)
+
+# ── Gait2 페이즈별 게인 ──────────────────────────────────────────────────────
+GAIT_KP_LOW  = np.array([200.0, 200.0, 200.0])  # Late Swing / Touch-down / Pre-Swing [N/m]
+GAIT_KD_MID  = np.array([ 20.0,  20.0,  20.0])  # Late Swing [N·s/m]
+GAIT_KD_HIGH = np.array([ 60.0,  60.0,  60.0])  # Touch-down / Pre-Swing [N·s/m]
+GAIT_KF_HIGH = np.array([  0.1,   0.1,   0.1])  # Mid Stance
+GAIT_KF_LOW  = np.array([  0.03,  0.03,  0.03]) # Pre-Swing
 
 # ── DH 파라미터 (leg_sim_v4.py 동기화) ─────────────────────────────────────────
 # [alpha, a(m), d(m)]
@@ -442,8 +449,8 @@ class MotionController:
         # 이벤트 트리거 (GRID → Python Event)
         self._idle_ev          = threading.Event()   # JogMode=0 & PauseMode=0 전환
         # [자세/액션 이벤트]
-        self._sitting_ev       = threading.Event()   # Sitting 자세 전환
-        self._standing_ev      = threading.Event()   # Standing 자세 전환
+        self._sitting_ev       = threading.Event()   # Sitting → STANDBY 전환
+        self._standing_ev      = threading.Event()   # Standing → STANDING 전환
         self._fall_recovery_ev = threading.Event()   # Fall Recovery
         self._jump_ev          = threading.Event()   # 점프 궤적
         self._home_ev          = threading.Event()   # 홈 복귀
@@ -590,7 +597,7 @@ class MotionController:
         self._ctrl_state = 'STANDBY'
 
     def _on_sitting(self):
-        """Sitting 이벤트 → RL trot 비활성, sitting 동작 트리거."""
+        """Sitting 이벤트 → RL trot 비활성, STANDBY 전환 트리거."""
         self._rl_trot_active = False
         self._sitting_ev.set()
         self._mcx.reset_sitting_event()
@@ -612,15 +619,15 @@ class MotionController:
         self._mcx.reset_fall_recovery_event()
 
     def _on_jump(self):
-        """jump=1 수신 — EXEC_TRAJ 중이 아닐 때만 트리거."""
-        if self._ctrl_state != 'EXEC_TRAJ':
+        """jump=1 수신 — EXEC_TRAJ / HOME 중이 아닐 때만 트리거."""
+        if self._ctrl_state not in ('EXEC_TRAJ', 'HOME'):
             self._jump_ev.set()
 
     def _on_home(self):
         self._home_ev.set()
 
     def _on_movel(self):
-        if self._ctrl_state != 'EXEC_TRAJ':
+        if self._ctrl_state not in ('EXEC_TRAJ', 'HOME'):
             self._movel_ev.set()
 
     def _on_force_s(self):
@@ -642,10 +649,14 @@ class MotionController:
     def _on_force_t_stop(self):
         """forceT=0 수신 — GRF 제어 종료."""
         self._force_t_active = False
+        self._force_grf_active = False
         self.kf_grf = np.zeros(3)
 
     def _on_force_f_start(self):
-        """forceF=1 수신 — GRF 피드백 ON (tau_dyn + tau_grf)."""
+        """forceF=1 수신 — forceT 활성 시에만 GRF 피드백 ON."""
+        if not self._force_t_active:
+            self._mcx.reset_force_f_event()
+            return
         self._force_grf_active = True
         self.kf_grf = KF_GRF.copy()
         self._mcx.reset_force_f_event()
@@ -670,26 +681,29 @@ class MotionController:
                 if log_cb:
                     log_cb('제어권 획득 — 이벤트 수신 대기 중')
 
-            # ── [정상 운용] Sitting ─────────────────────────────────────────────
+            # ── [정상 운용] Sitting → STANDBY ──────────────────────────────────
             if self._sitting_ev.is_set():
                 self._sitting_ev.clear()
+                self._ctrl_state = 'STANDBY'
                 if log_cb:
-                    log_cb('Sitting: 자세 전환 (TODO)')
-                # TODO: sitting 자세 궤적 실행
+                    log_cb('Sitting: STANDBY 전환 (궤적 TODO)')
+                # TODO: sitting 궤적 실행
 
-            # ── [정상 운용] Standing ────────────────────────────────────────────
+            # ── [정상 운용] Standing → STANDING ────────────────────────────────
             elif self._standing_ev.is_set():
                 self._standing_ev.clear()
+                self._ctrl_state = 'STANDING'
                 if log_cb:
-                    log_cb('Standing: 자세 전환 (TODO)')
-                # TODO: standing 자세 궤적 실행
+                    log_cb('Standing: STANDING 전환 (궤적 TODO)')
+                # TODO: standing 궤적 실행
 
-            # ── [정상 운용] Fall Recovery (→ Sitting 복귀) ─────────────────────
+            # ── [정상 운용] Fall Recovery → STANDBY ────────────────────────────
             elif self._fall_recovery_ev.is_set():
                 self._fall_recovery_ev.clear()
                 self._rl_trot_active = False
+                self._ctrl_state = 'STANDBY'
                 if log_cb:
-                    log_cb('Fall Recovery: 낙상 복구 (TODO)')
+                    log_cb('Fall Recovery: STANDBY 복귀 (궤적 TODO)')
                 # TODO: fall recovery 궤적 실행
 
             # ── [Leg_test] Home ─────────────────────────────────────────────────
@@ -721,7 +735,7 @@ class MotionController:
                 if log_cb:
                     log_cb('Gait: Bezier 발걸음 패턴 실행')
                 self._run_gait(log_cb=log_cb)
-                # self._run_gait2(log_cb=log_cb)
+                #self._run_gait2(log_cb=log_cb)
                 self._mcx.reset_gait_event()
                 time.sleep(0.05)
                 self._gait_ev.clear()
@@ -897,10 +911,13 @@ class MotionController:
     # ── gait2: 5차 Bezier 2단계 + forceS δ 임피던스 ─────────────────────────
     def _run_gait2(self, log_cb=None):
         """
-        5차 Bezier 2단계 발걸음 (blocking).
-          이륙: [p_start, p_start+δ, c1, c2, p_peak, p_peak]  forceS ON→OFF
-          착지: [p_peak,  p_peak,  c3, c4, p_end+δ, p_end  ]  forceS OFF→ON
-        δ(GAIT_IMP_DELTA) 오프셋으로 이착지 순간 임피던스 작동 시간 확보.
+        5차 Bezier 발걸음 — 6페이즈 게인 스케줄링 (blocking).
+          Leave-off  : KP=0,   KD=0,    KF=0
+          Mid Swing  : KP=0,   KD=0,    KF=0
+          Late Swing : KP=낮음, KD=중간, KF=0
+          Touch-down : KP=낮음, KD=높음, KF=0
+          Mid Stance : KP=0,   KD=0,    KF=높음
+          Pre-Swing  : KP=낮음, KD=높음, KF=낮음
         """
         actual_j_mcx = self._mcx.actual_positions
         actual_j_phy = _to_phy(actual_j_mcx)
@@ -911,50 +928,69 @@ class MotionController:
             gp_start = self._gait_p_start
             gp_end   = self._gait_p_end
 
-        p_start = np.array(gp_start) if gp_start is not None \
-            else p_cur.copy()
+        p_start = np.array(gp_start) if gp_start is not None else p_cur.copy()
         p_end   = np.array(gp_end)   if gp_end is not None \
             else np.array([p_cur[0], p_cur[1], p_cur[2] + GAIT_STEP_Z])
 
-        # 접합점: 최고 높이(x), 시작/끝 z 중간
         p_peak = np.array([p_start[0] + GAIT_STEP_X, p_start[1],
                            (p_start[2] + p_end[2]) / 2])
 
-        # 이륙 5차: p_start → p_start+δ (forceS ON, toe-off) → 수직 상승 → 전방
-        liftoff_c1   = np.array([p_start[0] + GAIT_STEP_X, p_start[1], p_start[2]])
-        liftoff_c2   = np.array([p_start[0] + GAIT_STEP_X, p_start[1],
-                                 p_start[2] + (p_peak[2] - p_start[2]) * 0.7])
-        p_start_imp  = np.array([p_start[0] + GAIT_IMP_DELTA, p_start[1], p_start[2]])
-        liftoff_ctrl = [p_start, p_start_imp, liftoff_c1, liftoff_c2, p_peak, p_peak]
-
-        # 착지 5차: 전방 → 수직 하강 → p_end+δ → p_end (forceS ON, 충격 흡수)
-        landing_c3  = np.array([p_end[0] + GAIT_STEP_X, p_end[1],
-                                p_end[2] + (p_peak[2] - p_end[2]) * 0.7])
-        landing_c4  = np.array([p_end[0] + GAIT_STEP_X, p_end[1], p_end[2]])
+        # ── 경유점 정의 ──────────────────────────────────────────────────────
+        p_start_imp = np.array([p_start[0] + GAIT_IMP_DELTA, p_start[1], p_start[2]])
+        p_sw_mid    = np.array([p_start[0] + GAIT_STEP_X * 0.5, p_start[1],
+                                p_start[2] + (p_peak[2] - p_start[2]) * 0.5])
+        p_td        = p_peak + 0.25 * (p_end - p_peak)
+        p_ms        = p_peak + 0.65 * (p_end - p_peak)
         p_end_imp   = np.array([p_end[0] + GAIT_IMP_DELTA, p_end[1], p_end[2]])
-        landing_ctrl = [p_peak, p_peak, landing_c3, landing_c4, p_end_imp, p_end]
 
-        dt = self.traj_dt
+        dt   = self.traj_dt
+        _z   = np.zeros(3)
 
-        def _run_phase(ctrl, label, j_phy):
-            chord = sum(np.linalg.norm(ctrl[i + 1] - ctrl[i]) for i in range(len(ctrl) - 1))
+        def _set_gains(kp, kd, kf):
+            self.kp_imp = kp.copy()
+            self.kd_imp = kd.copy()
+            self.kf_grf = kf.copy()
+
+        def _run_seg(ctrl, label, j_phy):
+            chord = sum(np.linalg.norm(ctrl[i+1] - ctrl[i]) for i in range(len(ctrl)-1))
             n = max(10, int(chord / (MOVEL_VEL * dt)))
             pts = _bezier_curve(ctrl, n)
             dense_j = self._ik_trajectory(pts, phi, j_phy, log_cb=log_cb, label=label)
             if log_cb:
-                log_cb(f'{label} (φ={math.degrees(phi):.1f}°): '
-                       f'{n}pts / chord={chord*1e3:.1f}mm / dt={dt*1e3:.1f}ms')
+                log_cb(f'{label}: {n}pts / chord={chord*1e3:.1f}mm')
             self._send_cst(dense_j, dt, label, cartesian_refs=pts, log_cb=log_cb)
+            return _to_phy(self._mcx.actual_positions)
 
-        # 이륙: forceS ON(toe-off δ구간) → 스윙 중 OFF
-        self._force_s_active = True
-        _run_phase(liftoff_ctrl, 'gait2_liftoff', actual_j_phy)
-        self._force_s_active = False
+        # ── Leave-off (KP=0, KD=0, KF=0) ────────────────────────────────────
+        _set_gains(_z, _z, _z)
+        cur = _run_seg([p_start, p_start_imp], 'leave_off', actual_j_phy)
 
-        # 착지: 스윙 중 OFF → forceS ON(충격흡수 δ구간)
-        actual_j_phy2 = _to_phy(self._mcx.actual_positions)
-        _run_phase(landing_ctrl, 'gait2_landing', actual_j_phy2)
-        self._force_s_active = True
+        # ── Mid Swing (KP=0, KD=0, KF=0) ─────────────────────────────────────
+        c1 = np.array([p_start_imp[0] + GAIT_STEP_X * 0.3, p_start_imp[1], p_start_imp[2]])
+        _set_gains(_z, _z, _z)
+        cur = _run_seg([p_start_imp, c1, p_sw_mid], 'mid_swing', cur)
+
+        # ── Late Swing (KP=낮음, KD=중간, KF=0) ──────────────────────────────
+        c2 = np.array([p_sw_mid[0] + GAIT_STEP_X * 0.3, p_sw_mid[1],
+                       p_sw_mid[2] + (p_peak[2] - p_sw_mid[2]) * 0.7])
+        _set_gains(GAIT_KP_LOW, GAIT_KD_MID, _z)
+        cur = _run_seg([p_sw_mid, c2, p_peak], 'late_swing', cur)
+
+        # ── Touch-down (KP=낮음, KD=높음, KF=0) ──────────────────────────────
+        c3 = np.array([p_td[0], p_td[1], p_peak[2] - (p_peak[2] - p_td[2]) * 0.5])
+        _set_gains(GAIT_KP_LOW, GAIT_KD_HIGH, _z)
+        cur = _run_seg([p_peak, c3, p_td], 'touch_down', cur)
+
+        # ── Mid Stance (KP=0, KD=0, KF=높음) ─────────────────────────────────
+        _set_gains(_z, _z, GAIT_KF_HIGH)
+        cur = _run_seg([p_td, p_ms], 'mid_stance', cur)
+
+        # ── Pre-Swing (KP=낮음, KD=높음, KF=낮음) ────────────────────────────
+        _set_gains(GAIT_KP_LOW, GAIT_KD_HIGH, GAIT_KF_LOW)
+        cur = _run_seg([p_ms, p_end_imp, p_end], 'pre_swing', cur)
+
+        # ── 게인 리셋 ─────────────────────────────────────────────────────────
+        _set_gains(_z, _z, _z)
 
     # ── 궤적 실행 공통 내부 함수 ──────────────────────────────────────────────
     def load_trajectory(self) -> list:
@@ -969,7 +1005,7 @@ class MotionController:
 
     # ── 단일 200Hz 제어 루프 (상태 머신) ─────────────────────────────────────
     def _control_loop(self):
-        """STANDBY / EXEC_TRAJ / FORCE_T_IDLE / FORCE_S_IDLE / HOME"""
+        """STANDBY / STANDING / EXEC_TRAJ / FORCE_T_IDLE / FORCE_S_IDLE / HOME"""
         zero_torque = [0.0] * N_AXES
         x_a_prev    = np.zeros(3)
         prev_state  = None
@@ -995,9 +1031,18 @@ class MotionController:
             # ── STANDBY ──────────────────────────────────────────────────
             if state == 'STANDBY':
                 with self._lock:
+                    positions = list(self._last_cmd_pos)
+                try:
+                    self._mcx.set_target_positions(positions)
+                except Exception:
+                    pass
+
+            # ── STANDING ─────────────────────────────────────────────────
+            elif state == 'STANDING':
+                with self._lock:
                     if self._rl_trot_active:
-                        elapsed  = time.monotonic() - self._interp_time
-                        t_ratio  = min(elapsed / CMD_PERIOD, 1.0)
+                        elapsed   = time.monotonic() - self._interp_time
+                        t_ratio   = min(elapsed / CMD_PERIOD, 1.0)
                         positions = [
                             self._interp_prev[i] + t_ratio * (self._interp_target[i] - self._interp_prev[i])
                             for i in range(N_AXES)
