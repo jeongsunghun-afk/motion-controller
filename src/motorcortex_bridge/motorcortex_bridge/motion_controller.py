@@ -750,9 +750,11 @@ class MotionController:
 
             elif self._force_t_active:
                 self._run_force_t_idle(log_cb=log_cb)
+                time.sleep(0.001)
 
             elif self._force_s_active:
                 self._run_force_s_idle(log_cb=log_cb)
+                time.sleep(0.001)
 
             else:
                 time.sleep(0.01)
@@ -763,8 +765,11 @@ class MotionController:
         """
         forceT 활성 시 stance 위치 기준 GRF 제어.
         _control_loop의 FORCE_T_IDLE 상태로 위임 — 실제 200Hz 루프는 _control_loop가 실행.
-        종료: forceT OFF / moveL·gait·jump·home 이벤트 (_control_loop가 STANDBY로 전환)
+        non-blocking: stance 초기화 후 즉시 반환 — event_loop가 계속 이벤트를 처리.
         """
+        if self._ctrl_state == 'FORCE_T_IDLE':
+            return
+
         q_a_phy = _to_phy(self._mcx.actual_positions)
         x_r     = np.array(forward_kinematics(q_a_phy)[-1])
         phi     = q_a_phy[1] + q_a_phy[2] + q_a_phy[3]
@@ -786,11 +791,6 @@ class MotionController:
             )
 
         self._ctrl_state = 'FORCE_T_IDLE'
-        while self._ctrl_state == 'FORCE_T_IDLE':
-            time.sleep(0.01)
-
-        if log_cb:
-            log_cb('forceT idle 종료')
 
     # ── IK 루프 공통 헬퍼 ────────────────────────────────────────────────────
     def _ik_trajectory(self, cart_pts, phi: float, prev_phy: list,
@@ -812,8 +812,11 @@ class MotionController:
         """
         forceS 단독 활성 시 stance 위치 기준 임피던스 루프.
         _control_loop의 FORCE_S_IDLE 상태로 위임.
-        종료: forceS OFF / moveL·gait·jump·forceT·home 이벤트
+        non-blocking: stance 초기화 후 즉시 반환 — event_loop가 계속 이벤트를 처리.
         """
+        if self._ctrl_state == 'FORCE_S_IDLE':
+            return
+
         q_a_phy = _to_phy(self._mcx.actual_positions)
         x_r     = np.array(forward_kinematics(q_a_phy)[-1])
         phi     = q_a_phy[1] + q_a_phy[2] + q_a_phy[3]
@@ -834,11 +837,6 @@ class MotionController:
             )
 
         self._ctrl_state = 'FORCE_S_IDLE'
-        while self._ctrl_state == 'FORCE_S_IDLE':
-            time.sleep(0.01)
-
-        if log_cb:
-            log_cb('forceS idle 종료')
 
     # ── 궤적 큐 적재 (비차단) ────────────────────────────────────────────────
     def _load_exec_traj(self, waypoints, dt: float, label: str,
@@ -1058,18 +1056,13 @@ class MotionController:
                         x_a_prev  = np.array(forward_kinematics(q_now_phy)[-1])
                         tau       = zero_torque
 
-                    self._mcx.set_target_positions(wp)
-                    self._mcx.set_target_torques(tau)
+                    self._mcx.set_pos_and_torque(wp, tau)
                     with self._lock:
                         self._last_cmd_pos = wp
 
             # ── FORCE_T_IDLE ─────────────────────────────────────────────
             elif state == 'FORCE_T_IDLE':
-                if (not self._force_t_active
-                        or self._jump_ev.is_set()
-                        or self._gait_ev.is_set()
-                        or self._movel_ev.is_set()
-                        or self._home_ev.is_set()):
+                if not self._force_t_active:
                     self._mcx.set_target_torques(zero_torque)
                     q_r_mcx = self._stance_q_r_mcx
                     with self._lock:
@@ -1096,12 +1089,7 @@ class MotionController:
 
             # ── FORCE_S_IDLE ─────────────────────────────────────────────
             elif state == 'FORCE_S_IDLE':
-                if (not self._force_s_active
-                        or self._jump_ev.is_set()
-                        or self._gait_ev.is_set()
-                        or self._movel_ev.is_set()
-                        or self._force_t_active
-                        or self._home_ev.is_set()):
+                if not self._force_s_active:
                     self._mcx.set_target_torques(zero_torque)
                     q_r_mcx = self._stance_q_r_mcx
                     with self._lock:

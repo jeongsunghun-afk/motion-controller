@@ -217,6 +217,19 @@ class MotorcortexInterface:
         if blocking:
             future.get()
 
+    def set_pos_and_torque(self, positions_rad: list, torques_nm: list, blocking: bool = False):
+        """position + torque를 단일 setParameterList로 원자적 전송."""
+        pos_cmd = list(positions_rad[:N_AXES]) + [0.0] * (NUM_CH - N_AXES)
+        tau_cmd = [float(t) for t in torques_nm[:N_AXES]] + [0.0] * (NUM_CH - N_AXES)
+        with self._lock:
+            self._last_target_rad = list(positions_rad[:N_AXES])
+        future = self._req.setParameterList([
+            {'path': POS_CMD_PATH,      'value': pos_cmd},
+            {'path': TORQUE_INPUT_PATH, 'value': tau_cmd},
+        ])
+        if blocking:
+            future.get()
+
     # ── 구독 ─────────────────────────────────────────────────────────────────
     def subscribe_positions(self):
         """axesPositionsActual 부모 경로 구독, value[0~4] 인덱싱."""
