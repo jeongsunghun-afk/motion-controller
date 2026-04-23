@@ -44,6 +44,7 @@ TORQUE_ACTUAL_PATH_FMT  = (                                             # 실제
 # ── 이벤트 경로 (GRID UserParameters) ──────────────────────────────────────────
 JUMP_EVENT_PATH          = 'root/UserParameters/jump'
 HOME_EVENT_PATH          = 'root/UserParameters/home'
+HOME_ADDITIVE_EVENT_PATH = 'root/UserParameters/homeAdditive'
 MOVE_L_EVENT_PATH        = 'root/UserParameters/moveL'
 FORCE_S_EVENT_PATH       = 'root/UserParameters/forceS'
 FORCE_T_EVENT_PATH       = 'root/UserParameters/forceT'
@@ -297,6 +298,12 @@ class MotorcortexInterface:
 
     def reset_home_event(self):
         self._reset_event(HOME_EVENT_PATH)
+
+    def subscribe_home_additive_event(self, cb: callable):
+        self._subscribe_event(HOME_ADDITIVE_EVENT_PATH, 'home_additive_group', cb)
+
+    def reset_home_additive_event(self):
+        self._reset_event(HOME_ADDITIVE_EVENT_PATH)
 
     def subscribe_movel_event(self, cb: callable):
         self._subscribe_event(MOVE_L_EVENT_PATH, 'movel_group', cb)

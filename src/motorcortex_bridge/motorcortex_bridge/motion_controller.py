@@ -426,7 +426,7 @@ class MotionController:
 
         self._lock = threading.Lock()
 
-        # 상태 머신 (STANDBY / RL_TROT / EXEC_TRAJ / FORCE_T_IDLE / FORCE_S_IDLE / HOME)
+        # 상태 머신 (STANDBY / STANDING / EXEC_TRAJ / FORCE_T_IDLE / FORCE_S_IDLE / HOME)
         self._ctrl_state = 'STANDBY'
 
         # RL trot 활성 여부
@@ -453,7 +453,8 @@ class MotionController:
         self._standing_ev      = threading.Event()   # Standing → STANDING 전환
         self._fall_recovery_ev = threading.Event()   # Fall Recovery
         self._jump_ev          = threading.Event()   # 점프 궤적
-        self._home_ev          = threading.Event()   # 홈 복귀
+        self._home_ev          = threading.Event()   # 홈 복귀 (POS, STANDBY 전용)
+        self._home_additive_ev = threading.Event()   # 홈 복귀 (ADDITIVE, 비STANDBY)
         self._movel_ev         = threading.Event()   # moveL
         self._force_t_active   = False        # forceT 활성 플래그 (signal=1 → True, 0 → False)
         self._force_grf_active = False        # GRF 피드백 포함 여부: True=tau_dyn+tau_grf / False=tau_dyn only
@@ -553,6 +554,7 @@ class MotionController:
         self._mcx.reset_fall_recovery_event()
         self._mcx.reset_jump_event()
         self._mcx.reset_home_event()
+        self._mcx.reset_home_additive_event()
         self._mcx.reset_movel_event()
         self._mcx.reset_force_s_event()
         self._mcx.reset_force_t_event()
@@ -569,6 +571,7 @@ class MotionController:
         # [액션 이벤트]
         self._mcx.subscribe_jump_event(self._on_jump)
         self._mcx.subscribe_home_event(self._on_home)
+        self._mcx.subscribe_home_additive_event(self._on_home_additive)
         self._mcx.subscribe_movel_event(self._on_movel)
         self._mcx.subscribe_force_s_event(self._on_force_s)
         self._mcx.subscribe_force_t_event(self._on_force_t_start, self._on_force_t_stop)
@@ -586,13 +589,20 @@ class MotionController:
     def _on_idle_mode(self):
         self._mcx.reset_additive()
         with self._lock:
+            self._traj_queue.clear()
+            self._cart_queue.clear()
             self._last_cmd_pos  = [0.0] * N_AXES
             self._interp_prev   = [0.0] * N_AXES
             self._interp_target = [0.0] * N_AXES
         self._ctrl_state = 'STANDBY'
+        self._traj_done_ev.set()
         self._idle_ev.set()
 
     def _on_busy_mode(self):
+        with self._lock:
+            self._traj_queue.clear()
+            self._cart_queue.clear()
+        self._traj_done_ev.set()
         self._idle_ev.clear()
         self._ctrl_state = 'STANDBY'
 
@@ -624,7 +634,12 @@ class MotionController:
             self._jump_ev.set()
 
     def _on_home(self):
-        self._home_ev.set()
+        if self._ctrl_state not in ('HOME', 'STANDING', 'FORCE_T_IDLE', 'FORCE_S_IDLE'):
+            self._home_ev.set()
+
+    def _on_home_additive(self):
+        if self._ctrl_state not in ('STANDBY', 'HOME', 'EXEC_TRAJ'):
+            self._home_additive_ev.set()
 
     def _on_movel(self):
         if self._ctrl_state not in ('EXEC_TRAJ', 'HOME'):
@@ -706,15 +721,26 @@ class MotionController:
                     log_cb('Fall Recovery: STANDBY 복귀 (궤적 TODO)')
                 # TODO: fall recovery 궤적 실행
 
-            # ── [Leg_test] Home ─────────────────────────────────────────────────
+            # ── [Leg_test] Home (POS, STANDBY 전용) ────────────────────────────
             elif self._home_ev.is_set():
                 self._home_ev.clear()
                 if log_cb:
-                    log_cb('Home: 홈 포지션 복귀')
+                    log_cb('Home(POS): POS 직접 명령으로 홈 복귀')
                 self.move_to_home(log_cb=log_cb)
+                self._ctrl_state = 'STANDBY'
                 self._mcx.reset_home_event()
                 time.sleep(0.05)
                 self._home_ev.clear()
+
+            # ── [Leg_test] Home Additive (ADDITIVE, 비STANDBY) ─────────────────
+            elif self._home_additive_ev.is_set():
+                self._home_additive_ev.clear()
+                if log_cb:
+                    log_cb('Home(ADDITIVE): ADDITIVE 명령으로 홈 복귀')
+                self.move_to_home_additive(log_cb=log_cb)
+                self._mcx.reset_home_additive_event()
+                time.sleep(0.05)
+                self._home_additive_ev.clear()
 
             # ── [Leg_test] Jump ─────────────────────────────────────────────────
             elif self._jump_ev.is_set():
@@ -1000,7 +1026,20 @@ class MotionController:
 
     # ── 단일 200Hz 제어 루프 (상태 머신) ─────────────────────────────────────
     def _control_loop(self):
-        """STANDBY / STANDING / EXEC_TRAJ / FORCE_T_IDLE / FORCE_S_IDLE / HOME"""
+        """
+        STANDBY       → last_cmd_pos 유지 (set_target_positions)
+        STANDING      → rl_trot_active=True  → 보간 위치
+                         rl_trot_active=False → last_cmd_pos 유지
+        EXEC_TRAJ     → home_ev 감지 시 queue 클리어
+                         wp 소모 → set_pos_and_torque(wp, tau)
+                         큐 소진 → STANDBY + traj_done_ev.set()
+        FORCE_T_IDLE  → force_t_active=False → 토크 0, STANDBY
+                         force_t_active=True  → GRF 임피던스 제어
+        FORCE_S_IDLE  → force_s_active=False → 토크 0, STANDBY
+                         force_s_active=True  → 임피던스 제어
+        HOME          → move_to_home_additive()가 event_loop 스레드에서 직접 제어
+                         완료 시 STANDBY
+        """
         zero_torque = [0.0] * N_AXES
         x_a_prev    = np.zeros(3)
         prev_state  = None
@@ -1150,7 +1189,7 @@ class MotionController:
 
             # ── HOME ─────────────────────────────────────────────────────
             elif state == 'HOME':
-                pass   # move_to_home이 set_additive_positions로 직접 제어
+                pass   # event_loop 스레드의 move_to_home_additive()가 직접 제어
 
             slack = t_next - time.monotonic()
             if slack > 0:
@@ -1252,7 +1291,7 @@ class MotionController:
         self._traj_done_ev.wait()
 
     # ── 홈 복귀 궤적 ─────────────────────────────────────────────────────────────
-    def move_to_home(self, max_vel: float = HOME_MAX_VEL,
+    def move_to_home_additive(self, max_vel: float = HOME_MAX_VEL,
                      max_acc: float = HOME_MAX_ACC, log_cb=None):
         """
         현재 actual 위치 → [0, 0, 0, 0] additive 위치 명령으로 홈 복귀 (blocking).
@@ -1314,6 +1353,48 @@ class MotionController:
                 self._interp_prev   = [0.0] * N_AXES
                 self._interp_target = [0.0] * N_AXES
             self._ctrl_state = 'STANDBY'
+
+    # ── 홈 복귀 (POS 직접, STANDBY 전용) ────────────────────────────────────────
+    def move_to_home(self, max_vel: float = HOME_MAX_VEL,
+                         max_acc: float = HOME_MAX_ACC, log_cb=None):
+        """
+        STANDBY 상태 전용 POS_CMD_PATH 홈 복귀 (blocking).
+        hostInJointPosition2 직접 명령 — additive 계산 없음.
+        사다리꼴 프로파일 + 5차 다항식으로 [0,0,0,0] (MCX offset) 수렴.
+        """
+        if self._ctrl_state != 'STANDBY':
+            if log_cb:
+                log_cb('move_to_home: STANDBY 상태 아님 — 스킵')
+            return
+
+        with self._lock:
+            current = list(self._last_cmd_pos)
+
+        if all(abs(p) < HOME_THRESHOLD_RAD for p in current):
+            if log_cb:
+                log_cb('홈 복귀(POS): 이미 홈 위치 — 스킵.')
+            return
+
+        max_dist = max(abs(p) for p in current)
+        profile  = trapezoid_profile(max_dist, max_vel, max_acc, self.traj_dt)
+        n        = len(profile)
+        duration = n * self.traj_dt
+
+        segs  = [_quintic_segment(current[i], 0.0, duration, self.traj_dt)
+                 for i in range(N_AXES)]
+        n_pts = len(segs[0])
+        dense = [[segs[i][k] for i in range(N_AXES)] for k in range(n_pts)]
+
+        if log_cb:
+            log_cb(
+                f'홈 복귀(POS): {n_pts}pts / {duration:.2f}s '
+                f'({HOME_SPEED_DEG:.1f}°/s)  '
+                + ', '.join(f'j{i+1}={math.degrees(current[i]):+.1f}°→0°'
+                            for i in range(N_AXES))
+            )
+
+        self._load_exec_traj(dense, self.traj_dt, 'homePos', log_cb=log_cb)
+        self._traj_done_ev.wait()
 
     # ── tracking 모드: 외부 명령 수신 ─────────────────────────────────────────
     def set_command(self,
