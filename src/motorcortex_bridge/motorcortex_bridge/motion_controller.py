@@ -638,7 +638,13 @@ class MotionController:
             self._home_ev.set()
 
     def _on_home_additive(self):
-        if self._ctrl_state not in ('STANDBY', 'HOME', 'EXEC_TRAJ'):
+        if self._ctrl_state != 'HOME':
+            if self._ctrl_state == 'EXEC_TRAJ':
+                with self._lock:
+                    self._traj_queue.clear()
+                    self._cart_queue.clear()
+                self._traj_done_ev.set()
+            self._ctrl_state = 'HOME'
             self._home_additive_ev.set()
 
     def _on_movel(self):
