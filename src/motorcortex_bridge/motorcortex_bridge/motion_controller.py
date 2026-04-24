@@ -1090,7 +1090,7 @@ class MotionController:
 
             # ── EXEC_TRAJ ────────────────────────────────────────────────
             elif state == 'EXEC_TRAJ':
-                if self._home_ev.is_set():
+                if self._home_ev.is_set() and self._traj_label != 'homePos':
                     with self._lock:
                         self._traj_queue.clear()
                         self._cart_queue.clear()
