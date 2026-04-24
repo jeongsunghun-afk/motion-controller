@@ -18,7 +18,7 @@ ROS2 의존성 없음 — joint_state_bridge 에서 생성하여 사용
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   Sitting       — sitting 자세 전환 (→ STANDBY)
   Standing      — standing 자세 전환 (→ STANDING)
-  RL_trot       — RL 명령 추종 (50Hz → 200Hz 선형 보간)
+  RL_trot       — RL 명령 추종 (50Hz → 200Hz 선형 보간, → RL_POLICY 상태)
   Fall recovery — 낙상 복구
   jump          — 점프 궤적 실행 (.txt)
   gait          — Bezier 발걸음 패턴 (이전 moveL 구현)
@@ -426,11 +426,8 @@ class MotionController:
 
         self._lock = threading.Lock()
 
-        # 상태 머신 (STANDBY / STANDING / EXEC_TRAJ / FORCE_T_IDLE / FORCE_S_IDLE / HOME)
+        # 상태 머신 (STANDBY / STANDING / RL_POLICY / EXEC_TRAJ / FORCE_T_IDLE / FORCE_S_IDLE / HOME)
         self._ctrl_state = 'STANDBY'
-
-        # RL trot 활성 여부
-        self._rl_trot_active = False
 
         # 마지막 명령 위치 (위치 유지 / publish 참조용)
         self._last_cmd_pos = list(Q_HOME_RAD)
@@ -607,20 +604,19 @@ class MotionController:
         self._ctrl_state = 'STANDBY'
 
     def _on_sitting(self):
-        """Sitting 이벤트 → RL trot 비활성, STANDBY 전환 트리거."""
-        self._rl_trot_active = False
+        """Sitting 이벤트 → STANDBY 전환 트리거."""
         self._sitting_ev.set()
         self._mcx.reset_sitting_event()
 
     def _on_standing(self):
-        """Standing 이벤트 → RL trot 비활성, standing 동작 트리거."""
-        self._rl_trot_active = False
+        """Standing 이벤트 → standing 동작 트리거."""
         self._standing_ev.set()
         self._mcx.reset_standing_event()
 
     def _on_rl_trot(self):
-        """RL_trot 이벤트 → 보간 모드 활성."""
-        self._rl_trot_active = True
+        """RL_trot 이벤트 → RL_POLICY 상태 전환 (STANDING에서만)."""
+        if self._ctrl_state == 'STANDING':
+            self._ctrl_state = 'RL_POLICY'
         self._mcx.reset_rl_trot_event()
 
     def _on_fall_recovery(self):
@@ -629,12 +625,12 @@ class MotionController:
         self._mcx.reset_fall_recovery_event()
 
     def _on_jump(self):
-        """jump=1 수신 — EXEC_TRAJ / HOME 중이 아닐 때만 트리거."""
-        if self._ctrl_state not in ('EXEC_TRAJ', 'HOME'):
+        """jump=1 수신 — EXEC_TRAJ / HOME / RL_POLICY 중이 아닐 때만 트리거."""
+        if self._ctrl_state not in ('EXEC_TRAJ', 'HOME', 'RL_POLICY'):
             self._jump_ev.set()
 
     def _on_home(self):
-        if self._ctrl_state not in ('HOME', 'STANDING', 'FORCE_T_IDLE', 'FORCE_S_IDLE'):
+        if self._ctrl_state not in ('HOME', 'STANDING', 'RL_POLICY', 'FORCE_T_IDLE', 'FORCE_S_IDLE'):
             self._home_ev.set()
 
     def _on_home_additive(self):
@@ -721,7 +717,6 @@ class MotionController:
             # ── [정상 운용] Fall Recovery → STANDBY ────────────────────────────
             elif self._fall_recovery_ev.is_set():
                 self._fall_recovery_ev.clear()
-                self._rl_trot_active = False
                 self._ctrl_state = 'STANDBY'
                 if log_cb:
                     log_cb('Fall Recovery: STANDBY 복귀 (궤적 TODO)')
@@ -1034,8 +1029,8 @@ class MotionController:
     def _control_loop(self):
         """
         STANDBY       → last_cmd_pos 유지 (set_target_positions)
-        STANDING      → rl_trot_active=True  → 보간 위치
-                         rl_trot_active=False → last_cmd_pos 유지
+        STANDING      → last_cmd_pos 유지 (RL_POLICY / EXEC_TRAJ 대기)
+        RL_POLICY     → set_command() 50Hz 입력을 200Hz 선형 보간
         EXEC_TRAJ     → home_ev 감지 시 queue 클리어
                          wp 소모 → set_pos_and_torque(wp, tau)
                          큐 소진 → STANDBY + traj_done_ev.set()
@@ -1080,15 +1075,21 @@ class MotionController:
             # ── STANDING ─────────────────────────────────────────────────
             elif state == 'STANDING':
                 with self._lock:
-                    if self._rl_trot_active:
-                        elapsed   = time.monotonic() - self._interp_time
-                        t_ratio   = min(elapsed / CMD_PERIOD, 1.0)
-                        positions = [
-                            self._interp_prev[i] + t_ratio * (self._interp_target[i] - self._interp_prev[i])
-                            for i in range(N_AXES)
-                        ]
-                    else:
-                        positions = list(self._last_cmd_pos)
+                    positions = list(self._last_cmd_pos)
+                try:
+                    self._mcx.set_target_positions(positions)
+                except Exception:
+                    pass
+
+            # ── RL_POLICY ─────────────────────────────────────────────────
+            elif state == 'RL_POLICY':
+                with self._lock:
+                    elapsed   = time.monotonic() - self._interp_time
+                    t_ratio   = min(elapsed / CMD_PERIOD, 1.0)
+                    positions = [
+                        self._interp_prev[i] + t_ratio * (self._interp_target[i] - self._interp_prev[i])
+                        for i in range(N_AXES)
+                    ]
                 try:
                     self._mcx.set_target_positions(positions)
                 except Exception:
