@@ -82,8 +82,8 @@ def _to_mcx(phy_j: list) -> list:
     return [phy_j[i] - Q_HOME_RAD[i] for i in range(N_AXES)]
 
 # ── 임피던스 제어 게인 (leg_sim_v4.py 동기화) ─────────────────────────────────
-KP_IMP  = np.array([800.0, 800.0, 800.0])   # Cartesian 강성 [N/m]
-KD_IMP  = np.array([ 40.0,  40.0,  40.0])   # Cartesian 감쇠 [N·s/m]
+KP_IMP  = np.array([ 80.0, 246.0, 246.0])   # Cartesian 강성 [N/m]  X(중력):≈80Nm/rad, Y/Z:≈80Nm/rad@hip
+KD_IMP  = np.array([  5.0,  15.0,  15.0])   # Cartesian 감쇠 [N·s/m] X(중력):≈5Nms/rad, Y/Z:≈5Nms/rad@hip
 KF_GRF  = np.array([  0.1,   0.1,   0.1])   # forceT GRF 피드백 게인 (무차원, force error → N)
 MU_DAMP = 1e-3                               # Jacobian 댐핑 계수 (특이점 방지)
 
