@@ -28,9 +28,12 @@ ROS2 의존성 없음 — joint_state_bridge 에서 생성하여 사용
   forceS        — moveL 임피던스 모드 토글 (ON시 moveL에 GRF+임피던스 토크 추가)
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-RL_trot 보간:
-  interp_q[i] = prev[i] + t * (target[i] - prev[i])   t ∈ [0, 1]
-  t = elapsed / CMD_PERIOD   (CMD_PERIOD = 1/50Hz = 0.02s)
+RL_trot 보간 (3차 Hermite, C1 연속):
+  q(s) = h00*q0 + h10*T*m0 + h01*q1 + h11*T*m1      s ∈ [0, 1]
+  h00=2s³−3s²+1, h10=s³−2s²+s, h01=−2s³+3s², h11=s³−s²
+  m0 : 구간 시작 속도 (이전 Hermite 미분, C1 연속 보장)
+  m1 : 구간 끝 속도  ((q_new − q_prev_target) / T 차분 추정)
+  s = elapsed / CMD_PERIOD,   CMD_PERIOD = 1/50 s = 0.02 s
 """
 
 import itertools
@@ -80,6 +83,25 @@ def _to_mcx(phy_j: list) -> list:
     IK 결과(물리각)를 MCX 명령으로 변환 시 사용.
     """
     return [phy_j[i] - Q_HOME_RAD[i] for i in range(N_AXES)]
+
+
+def _hermite_pos(s: float, T: float,
+                 q0: list, q1: list, m0: list, m1: list) -> list:
+    """3차 Hermite 위치 보간 (s ∈ [0,1], T=구간 시간[s])."""
+    h00 = 2*s**3 - 3*s**2 + 1;  h10 = s**3 - 2*s**2 + s
+    h01 =-2*s**3 + 3*s**2;       h11 = s**3 - s**2
+    return [h00*q0[i] + h10*T*m0[i] + h01*q1[i] + h11*T*m1[i]
+            for i in range(len(q0))]
+
+
+def _hermite_vel(s: float, T: float,
+                 q0: list, q1: list, m0: list, m1: list) -> list:
+    """3차 Hermite 속도 dq/dt (s ∈ [0,1], T=구간 시간[s])."""
+    dh00 = 6*s**2 - 6*s;  dh10 = 3*s**2 - 4*s + 1
+    dh01 =-6*s**2 + 6*s;  dh11 = 3*s**2 - 2*s
+    return [(dh00*q0[i]+dh10*T*m0[i]+dh01*q1[i]+dh11*T*m1[i])/T
+            for i in range(len(q0))]
+
 
 # ── 임피던스 제어 게인 (leg_sim_v4.py 동기화) ─────────────────────────────────
 KP_IMP  = np.array([ 80.0, 246.0, 246.0])   # Cartesian 강성 [N/m]  X(중력):≈80Nm/rad, Y/Z:≈80Nm/rad@hip
@@ -432,10 +454,12 @@ class MotionController:
         # 마지막 명령 위치 (위치 유지 / publish 참조용)
         self._last_cmd_pos = list(Q_HOME_RAD)
 
-        # ── tracking 모드: 선형 보간 상태 ─────────────────────────────────
+        # ── tracking 모드: Hermite 보간 상태 ──────────────────────────────
         self._interp_prev   = list(Q_HOME_RAD)
         self._interp_target = list(Q_HOME_RAD)
         self._interp_time   = time.monotonic()
+        self._interp_dq0    = [0.0] * N_AXES   # 구간 시작 속도 [rad/s]
+        self._interp_dq1    = [0.0] * N_AXES   # 구간 끝 속도   [rad/s]
 
         # ── tracking 모드: 외부 명령 부가 정보 ────────────────────────────
         self._cmd_dq  = [0.0]  * N_AXES
@@ -533,6 +557,8 @@ class MotionController:
             self._last_cmd_pos  = list(positions[:N_AXES])
             self._interp_prev   = list(positions[:N_AXES])
             self._interp_target = list(positions[:N_AXES])
+            self._interp_dq0    = [0.0] * N_AXES
+            self._interp_dq1    = [0.0] * N_AXES
 
     # ── jump / home 이벤트 루프 시작 ──────────────────────────────────────────
     def start(self, log_cb=None) -> int:
@@ -591,6 +617,8 @@ class MotionController:
             self._last_cmd_pos  = [0.0] * N_AXES
             self._interp_prev   = [0.0] * N_AXES
             self._interp_target = [0.0] * N_AXES
+            self._interp_dq0    = [0.0] * N_AXES
+            self._interp_dq1    = [0.0] * N_AXES
         self._ctrl_state = 'STANDBY'
         self._traj_done_ev.set()
         self._idle_ev.set()
@@ -1085,11 +1113,12 @@ class MotionController:
             elif state == 'RL_POLICY':
                 with self._lock:
                     elapsed   = time.monotonic() - self._interp_time
-                    t_ratio   = min(elapsed / CMD_PERIOD, 1.0)
-                    positions = [
-                        self._interp_prev[i] + t_ratio * (self._interp_target[i] - self._interp_prev[i])
-                        for i in range(N_AXES)
-                    ]
+                    s         = min(elapsed / CMD_PERIOD, 1.0)
+                    positions = _hermite_pos(
+                        s, CMD_PERIOD,
+                        self._interp_prev, self._interp_target,
+                        self._interp_dq0,  self._interp_dq1,
+                    )
                 try:
                     self._mcx.set_target_positions(positions)
                 except Exception:
@@ -1424,14 +1453,27 @@ class MotionController:
         """
         now = time.monotonic()
         with self._lock:
-            # 현재 보간 진행률로 시작점 갱신
+            # 현재 Hermite 진행률로 시작점·속도 갱신 (C1 연속 보장)
             elapsed = now - self._interp_time
-            t = min(elapsed / CMD_PERIOD, 1.0)
-            self._interp_prev = [
-                self._interp_prev[i] + t * (self._interp_target[i] - self._interp_prev[i])
-                for i in range(N_AXES)
-            ]
+            s = min(elapsed / CMD_PERIOD, 1.0)
+            cur_pos = _hermite_pos(
+                s, CMD_PERIOD,
+                self._interp_prev, self._interp_target,
+                self._interp_dq0,  self._interp_dq1,
+            )
+            cur_vel = _hermite_vel(
+                s, CMD_PERIOD,
+                self._interp_prev, self._interp_target,
+                self._interp_dq0,  self._interp_dq1,
+            )
+            # 새 구간 끝 속도: RL 명령 차분으로 추정
+            new_dq1 = [(q[i] - self._interp_target[i]) / CMD_PERIOD
+                       for i in range(N_AXES)]
+
+            self._interp_prev   = cur_pos
+            self._interp_dq0    = cur_vel
             self._interp_target = list(q)
+            self._interp_dq1    = new_dq1
             self._interp_time   = now
 
             self._cmd_dq  = list(dq)  if dq  is not None else [0.0]  * N_AXES
