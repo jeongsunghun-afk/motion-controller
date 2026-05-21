@@ -9,7 +9,7 @@ Motorcortex + 시뮬레이터 통합 런치 파일
   mcx_cert:=/path/to/cert.crt     (인증서 경로, 선택)
   mcx_login:=admin
   mcx_password:=vectioneer
-  traj_file:=/home/jsh/leg_sim/trajectory_jump.txt
+  traj_file:=/home/jsh/ros2_ws/src/motorcortex_bridge/motorcortex_bridge/trajectory_jump.txt
   traj_dt:=0.02                   (waypoint 간격 [s], 기본 50Hz)
   use_rviz:=true                  (true: RViz2 실행 / false: Isaac Sim 연결 모드)
 """
@@ -48,7 +48,8 @@ def generate_launch_description():
         description='Motorcortex 비밀번호'
     )
     declare_traj_file = DeclareLaunchArgument(
-        'traj_file', default_value='/home/jsh/leg_sim/trajectory_jump.txt',
+        'traj_file',
+        default_value='/home/jsh/ros2_ws/src/motorcortex_bridge/motorcortex_bridge/trajectory_jump.txt',
         description='궤적 파일 경로'
     )
     declare_traj_dt = DeclareLaunchArgument(

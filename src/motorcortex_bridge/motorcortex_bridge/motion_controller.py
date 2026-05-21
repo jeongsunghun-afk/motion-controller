@@ -19,6 +19,9 @@ ROS2 의존성 없음 — joint_state_bridge 에서 생성하여 사용
   Sitting       — sitting 자세 전환 (→ STANDBY)
   Standing      — standing 자세 전환 (→ STANDING)
   RL_trot       — RL 명령 추종 (50Hz → 200Hz 선형 보간, → RL_POLICY 상태)
+  MPC_trot      — MPC trot (stub, 구현 TODO)
+  MPC_stairs    — MPC 계단 보행 (stub, 구현 TODO)
+  NMPC_trot     — NMPC trot (stub, 구현 TODO)
   Fall recovery — 낙상 복구
   jump          — 점프 궤적 실행 (.txt)
   gait          — Bezier 발걸음 패턴 (이전 moveL 구현)
@@ -53,7 +56,7 @@ Q_HOME_DEG = [0.0, -150.0, -90.0, 90.0]
 Q_HOME_RAD = [math.radians(d) for d in Q_HOME_DEG]
 
 # ── 기본값 ─────────────────────────────────────────────────────────────────────
-TRAJ_FILE_DEFAULT  = '/home/jsh/leg_sim/trajectory_jump.txt'
+TRAJ_FILE_DEFAULT  = '/home/jsh/ros2_ws/src/motorcortex_bridge/motorcortex_bridge/trajectory_jump.txt'
 TRAJ_DT_DEFAULT    = 0.005    # 200 Hz
 CMD_PERIOD         = 0.02    # 외부 명령 수신 주기 [s] (tracking 모드 기준, 50 Hz)
 HOLD_CYCLE         = 0.005   # 200 Hz (보간 루프 주기)
@@ -473,6 +476,9 @@ class MotionController:
         self._sitting_ev       = threading.Event()   # Sitting → STANDBY 전환
         self._standing_ev      = threading.Event()   # Standing → STANDING 전환
         self._fall_recovery_ev = threading.Event()   # Fall Recovery
+        self._mpc_trot_ev      = threading.Event()   # MPC trot   (stub, 구현 TODO)
+        self._mpc_stairs_ev    = threading.Event()   # MPC stairs (stub, 구현 TODO)
+        self._nmpc_trot_ev     = threading.Event()   # NMPC trot  (stub, 구현 TODO)
         self._jump_ev          = threading.Event()   # 점프 궤적
         self._home_ev          = threading.Event()   # 홈 복귀 (POS, STANDBY 전용)
         self._home_additive_ev = threading.Event()   # 홈 복귀 (ADDITIVE, 비STANDBY)
@@ -575,6 +581,10 @@ class MotionController:
         self._mcx.reset_standing_event()
         self._mcx.reset_rl_trot_event()
         self._mcx.reset_fall_recovery_event()
+        # GRID 프로젝트에 MPC_trot/MPC_stairs/NMPC_trot 파라미터 추가 후 아래 3줄 주석 해제
+        # self._mcx.reset_mpc_trot_event()
+        # self._mcx.reset_mpc_stairs_event()
+        # self._mcx.reset_nmpc_trot_event()
         self._mcx.reset_jump_event()
         self._mcx.reset_home_event()
         self._mcx.reset_home_additive_event()
@@ -591,6 +601,10 @@ class MotionController:
         self._mcx.subscribe_standing_event(self._on_standing)
         self._mcx.subscribe_rl_trot_event(self._on_rl_trot)
         self._mcx.subscribe_fall_recovery_event(self._on_fall_recovery)
+        # GRID 프로젝트에 MPC_trot/MPC_stairs/NMPC_trot 파라미터 추가 후 아래 3줄 주석 해제
+        # self._mcx.subscribe_mpc_trot_event(self._on_mpc_trot)
+        # self._mcx.subscribe_mpc_stairs_event(self._on_mpc_stairs)
+        # self._mcx.subscribe_nmpc_trot_event(self._on_nmpc_trot)
         # [액션 이벤트]
         self._mcx.subscribe_jump_event(self._on_jump)
         self._mcx.subscribe_home_event(self._on_home)
@@ -651,6 +665,21 @@ class MotionController:
         """Fall Recovery 이벤트 → 뼈대 (상세 구현 추후)."""
         self._fall_recovery_ev.set()
         self._mcx.reset_fall_recovery_event()
+
+    def _on_mpc_trot(self):
+        """MPC trot 이벤트 → stub (상세 구현 추후)."""
+        self._mpc_trot_ev.set()
+        self._mcx.reset_mpc_trot_event()
+
+    def _on_mpc_stairs(self):
+        """MPC stairs 이벤트 → stub (상세 구현 추후)."""
+        self._mpc_stairs_ev.set()
+        self._mcx.reset_mpc_stairs_event()
+
+    def _on_nmpc_trot(self):
+        """NMPC trot 이벤트 → stub (상세 구현 추후)."""
+        self._nmpc_trot_ev.set()
+        self._mcx.reset_nmpc_trot_event()
 
     def _on_jump(self):
         """jump=1 수신 — EXEC_TRAJ / HOME / RL_POLICY 중이 아닐 때만 트리거."""
@@ -749,6 +778,27 @@ class MotionController:
                 if log_cb:
                     log_cb('Fall Recovery: STANDBY 복귀 (궤적 TODO)')
                 # TODO: fall recovery 궤적 실행
+
+            # ── [stub] MPC trot ────────────────────────────────────────────────
+            elif self._mpc_trot_ev.is_set():
+                self._mpc_trot_ev.clear()
+                if log_cb:
+                    log_cb('MPC trot: 이벤트 수신 (구현 TODO)')
+                # TODO: MPC trot 구현
+
+            # ── [stub] MPC stairs ──────────────────────────────────────────────
+            elif self._mpc_stairs_ev.is_set():
+                self._mpc_stairs_ev.clear()
+                if log_cb:
+                    log_cb('MPC stairs: 이벤트 수신 (구현 TODO)')
+                # TODO: MPC stairs 구현
+
+            # ── [stub] NMPC trot ───────────────────────────────────────────────
+            elif self._nmpc_trot_ev.is_set():
+                self._nmpc_trot_ev.clear()
+                if log_cb:
+                    log_cb('NMPC trot: 이벤트 수신 (구현 TODO)')
+                # TODO: NMPC trot 구현
 
             # ── [Leg_test] Home (POS, STANDBY 전용) ────────────────────────────
             elif self._home_ev.is_set():

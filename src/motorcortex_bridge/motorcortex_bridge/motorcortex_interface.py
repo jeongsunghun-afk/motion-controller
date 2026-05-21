@@ -54,6 +54,10 @@ SITTING_EVENT_PATH       = 'root/UserParameters/Sitting'
 STANDING_EVENT_PATH      = 'root/UserParameters/Standing'
 RL_TROT_EVENT_PATH       = 'root/UserParameters/RL_trot'
 FALL_RECOVERY_EVENT_PATH = 'root/UserParameters/Fall recovery'
+# ── MPC / NMPC 모드 이벤트 (stub — 구현 TODO) ──────────────────────────────────
+MPC_TROT_EVENT_PATH      = 'root/UserParameters/MPC_trot'
+MPC_STAIRS_EVENT_PATH    = 'root/UserParameters/MPC_stairs'
+NMPC_TROT_EVENT_PATH     = 'root/UserParameters/NMPC_trot'
 
 # ── 조인트 매핑: (ROS joint name, ch index) ───────────────────────────────────
 #   ch0 = HL_joint2_thigh_r
@@ -361,6 +365,25 @@ class MotorcortexInterface:
 
     def reset_fall_recovery_event(self):
         self._reset_event(FALL_RECOVERY_EVENT_PATH)
+
+    # ── MPC / NMPC 모드 이벤트 구독 / 리셋 (stub — 구현 TODO) ──────────────────
+    def subscribe_mpc_trot_event(self, cb: callable):
+        self._subscribe_event(MPC_TROT_EVENT_PATH, 'mpc_trot_group', cb)
+
+    def reset_mpc_trot_event(self):
+        self._reset_event(MPC_TROT_EVENT_PATH)
+
+    def subscribe_mpc_stairs_event(self, cb: callable):
+        self._subscribe_event(MPC_STAIRS_EVENT_PATH, 'mpc_stairs_group', cb)
+
+    def reset_mpc_stairs_event(self):
+        self._reset_event(MPC_STAIRS_EVENT_PATH)
+
+    def subscribe_nmpc_trot_event(self, cb: callable):
+        self._subscribe_event(NMPC_TROT_EVENT_PATH, 'nmpc_trot_group', cb)
+
+    def reset_nmpc_trot_event(self):
+        self._reset_event(NMPC_TROT_EVENT_PATH)
 
     # ── JogMode / PauseMode 동시 0 구독 ──────────────────────────────────────
     def subscribe_idle_mode(self, on_idle: callable, on_busy: callable = None):
