@@ -482,11 +482,14 @@ class MotionController:
         self._jump_ev          = threading.Event()   # 점프 궤적
         self._home_ev          = threading.Event()   # 홈 복귀 (POS, STANDBY 전용)
         self._home_additive_ev = threading.Event()   # 홈 복귀 (ADDITIVE, 비STANDBY)
+        self._home_additive_in_progress = False      # event_loop이 실제 모션 실행 중인지 표시
+                                                     # GRID 버튼 latched → buffered 콜백 재진입 방지용
         self._movel_ev         = threading.Event()   # moveL
         self._force_t_active   = False        # forceT 활성 플래그 (signal=1 → True, 0 → False)
         self._force_grf_active = False        # GRF 피드백 포함 여부: True=tau_dyn+tau_grf / False=tau_dyn only
         self.force_t_ref       = np.zeros(3)  # forceT 목표 GRF [N] (힙 원점 기준, 초기=0 → GRF 상쇄)
         self._force_s_active   = False        # forceS 임피던스 토글
+        self._force_s_last_ts  = 0.0          # forceS 디바운스 (콜백 재발화 차단, 200ms)
 
         # 궤적 실행 중 힘 제어 게인 — 외부/콜백에서 직접 설정 (0 = 비활성)
         self.kp_imp = np.zeros(3)   # Cartesian 강성 게인 [N/m]
@@ -553,6 +556,26 @@ class MotionController:
             self._gait_p_start = tuple(p_start) if p_start is not None else None
             self._gait_p_end   = tuple(p_end)   if p_end is not None else None
 
+    # ── 발끝 상태 publish (외부 50Hz 타이머에서 호출) ───────────────────────
+    def publish_foot_state(self):
+        """현재 actual 기준 발끝 위치(FK)·추정 GRF 를 MCX UserParameters 에 기록.
+
+        - Foot_POS : 힙 원점 기준 발끝 좌표 [mm]  (forward_kinematics 출력 × 1000)
+        - Foot_GRF : 추정 지면반력 [N]           (compute_grf — actuatorTorqueActual 기반)
+
+        joint_state_bridge 의 50Hz publish 타이머에서 호출.
+        actual_torque 가 미수신 등 어떤 이유로 계산 실패해도 무시 (publish 만 스킵).
+        """
+        if not self._mcx.is_connected:
+            return
+        try:
+            q_phy = _to_phy(self._mcx.actual_positions)
+            x_foot, J, tau_g = _fun_force_f(q_phy)
+            grf = compute_grf(self._mcx.actual_torque, tau_g, J)
+            self._mcx.set_foot_state((x_foot * 1000.0).tolist(), grf.tolist())
+        except Exception:
+            pass
+
     # ── 초기 위치 설정 (MCX joint offset 기준) ───────────────────────────────
     def set_initial_positions(self, positions: list):
         """
@@ -614,6 +637,14 @@ class MotionController:
         self._mcx.subscribe_force_t_event(self._on_force_t_start, self._on_force_t_stop)
         self._mcx.subscribe_force_f_event(self._on_force_f_start, self._on_force_f_stop)
         self._mcx.subscribe_gait_event(self._on_gait)
+
+        # event_loop 의 idle 게이트 강제 해제.
+        # subscribe_idle_mode 는 (gotoJogMode==0 AND gotoPauseMode==0) 0→1 에지에서만
+        # _idle_ev.set() 을 호출하는데, services_config.json 이 JogMode=1 로 운용을
+        # 자동 적용하면 그 에지가 영영 안 와서 event_loop 이 _idle_ev.wait() 에 갇힌다.
+        # 결과: 모든 이벤트 콜백은 발화하지만 event_loop 분기 처리는 죽음.
+        # → 시작 시점에 강제로 set 해서 event_loop 이 즉시 활성화되도록 한다.
+        self._idle_ev.set()
 
         self._event_thread = threading.Thread(
             target=self._event_loop, args=(log_cb,), daemon=True
@@ -686,26 +717,62 @@ class MotionController:
         if self._ctrl_state not in ('EXEC_TRAJ', 'HOME', 'RL_POLICY'):
             self._jump_ev.set()
 
+    def _disable_impedance_if_active(self):
+        """forceS/forceT 활성 중이면 모두 해제 (home 등 우선 동작 보장용).
+
+        호출 후 control_loop이 FORCE_*_IDLE 분기에서 _force_*_active=False 를
+        감지해 STANDBY 로 전환하며 event_loop 의 force_s/t 재진입도 차단된다.
+        """
+        if self._force_s_active or self._force_t_active:
+            self._force_s_active   = False
+            self._force_t_active   = False
+            self._force_grf_active = False
+            self.kp_imp = np.zeros(3)
+            self.kd_imp = np.zeros(3)
+            self.kf_grf = np.zeros(3)
+
     def _on_home(self):
-        if self._ctrl_state not in ('HOME', 'STANDING', 'RL_POLICY', 'FORCE_T_IDLE', 'FORCE_S_IDLE'):
-            self._home_ev.set()
+        """홈 복귀(POS). FORCE_T/S_IDLE 활성 중이면 임피던스 해제 후 home 진행."""
+        if self._ctrl_state in ('HOME', 'STANDING', 'RL_POLICY'):
+            return
+        self._disable_impedance_if_active()
+        self._home_ev.set()
 
     def _on_home_additive(self):
-        if self._ctrl_state != 'HOME':
-            if self._ctrl_state == 'EXEC_TRAJ':
-                with self._lock:
-                    self._traj_queue.clear()
-                    self._cart_queue.clear()
-                self._traj_done_ev.set()
-            self._ctrl_state = 'HOME'
-            self._home_additive_ev.set()
+        """홈 복귀(ADDITIVE). FORCE_T/S_IDLE 활성 중이면 임피던스 해제 후 home 진행.
+
+        진행 여부는 _home_additive_in_progress 플래그로 판정.
+        event_loop이 모션을 실제로 실행 중이면 True, 끝나면 False (try/finally 보장).
+        → GRID 버튼 latched로 buffered 콜백이 들어와도 안전하게 무시.
+        → 이전 시도가 crash 로 끝나도 flag 가 finally 에서 False 로 복원 → 다음 press 정상 동작.
+        """
+        if self._home_additive_in_progress:
+            return   # 모션 진행 중 — buffered 콜백 무시
+        self._disable_impedance_if_active()
+        if self._ctrl_state == 'EXEC_TRAJ':
+            with self._lock:
+                self._traj_queue.clear()
+                self._cart_queue.clear()
+            self._traj_done_ev.set()
+        self._ctrl_state = 'HOME'
+        self._home_additive_ev.set()
 
     def _on_movel(self):
         if self._ctrl_state not in ('EXEC_TRAJ', 'HOME'):
             self._movel_ev.set()
 
     def _on_force_s(self):
-        """forceS 버튼: moveL 임피던스 모드 ON/OFF 토글."""
+        """forceS 버튼: moveL 임피던스 모드 ON/OFF 토글 (level+0→1 에지 + 200ms 디바운스).
+
+        구독이 level+에지로 바뀌어 GRID value=1 유지 중에도 재발화 없음.
+        디바운스 200ms는 사용자 중복 클릭/스파이크 방어용 백스톱.
+        reset_force_s_event()는 호출 안 함 — 호출하면 latched 버튼에서
+        0→1 에지가 재생성되어 토글이 다시 반복됨.
+        """
+        now = time.monotonic()
+        if now - self._force_s_last_ts < 0.2:
+            return
+        self._force_s_last_ts = now
         self._force_s_active = not self._force_s_active
         if self._force_s_active:
             self.kp_imp = KP_IMP.copy()
@@ -713,12 +780,15 @@ class MotionController:
         else:
             self.kp_imp = np.zeros(3)
             self.kd_imp = np.zeros(3)
-        self._mcx.reset_force_s_event()
 
     def _on_force_t_start(self):
-        """forceT=1 수신 — GRF 제어 시작 (동작 중에도 즉시 활성)."""
+        """forceT=1 수신 — GRF 제어 시작 (동작 중에도 즉시 활성).
+
+        level+에지 구독이라 1 유지 중 재발화 없음.
+        reset 호출 안 함 — 호출하면 1→0 에지가 즉시 만들어져
+        on_stop(_on_force_t_stop) 이 발화, forceT 가 바로 꺼져버린다.
+        """
         self._force_t_active = True
-        self._mcx.reset_force_t_event()
 
     def _on_force_t_stop(self):
         """forceT=0 수신 — GRF 제어 종료."""
@@ -727,13 +797,14 @@ class MotionController:
         self.kf_grf = np.zeros(3)
 
     def _on_force_f_start(self):
-        """forceF=1 수신 — forceT 활성 시에만 GRF 피드백 ON."""
+        """forceF=1 수신 — forceT 활성 시에만 GRF 피드백 ON.
+
+        level+에지 구독이라 reset 불필요 (호출하면 _on_force_f_stop 즉시 발화).
+        """
         if not self._force_t_active:
-            self._mcx.reset_force_f_event()
             return
         self._force_grf_active = True
         self.kf_grf = KF_GRF.copy()
-        self._mcx.reset_force_f_event()
 
     def _on_force_f_stop(self):
         """forceF=0 수신 — GRF 피드백 OFF (tau_dyn only)."""
@@ -814,12 +885,16 @@ class MotionController:
             # ── [Leg_test] Home Additive (ADDITIVE, 비STANDBY) ─────────────────
             elif self._home_additive_ev.is_set():
                 self._home_additive_ev.clear()
-                if log_cb:
-                    log_cb('Home(ADDITIVE): ADDITIVE 명령으로 홈 복귀')
-                self.move_to_home_additive(log_cb=log_cb)
-                self._mcx.reset_home_additive_event()
-                time.sleep(0.05)
-                self._home_additive_ev.clear()
+                self._home_additive_in_progress = True
+                try:
+                    if log_cb:
+                        log_cb('Home(ADDITIVE): ADDITIVE 명령으로 홈 복귀')
+                    self.move_to_home_additive(log_cb=log_cb)
+                    self._mcx.reset_home_additive_event()
+                    time.sleep(0.05)
+                    self._home_additive_ev.clear()
+                finally:
+                    self._home_additive_in_progress = False
 
             # ── [Leg_test] Jump ─────────────────────────────────────────────────
             elif self._jump_ev.is_set():

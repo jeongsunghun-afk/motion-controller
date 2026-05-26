@@ -41,6 +41,10 @@ TORQUE_ACTUAL_PATH_FMT  = (                                             # 실제
     'root/AxesControl/actuatorControlLoops'
     '/actuatorControlLoop{:02d}/actuatorTorqueActual'
 )
+# ── 발끝 상태 출력 경로 (UserParameters) ─────────────────────────────────────
+FOOT_POS_PATH = 'root/UserParameters/Foot_POS'   # double[3] x,y,z [mm]  힙 원점 기준 FK (m × 1000)
+FOOT_GRF_PATH = 'root/UserParameters/Foot_GRF'   # double[3] x,y,z [N]   추정 지면반력
+
 # ── 이벤트 경로 (GRID UserParameters) ──────────────────────────────────────────
 JUMP_EVENT_PATH          = 'root/UserParameters/jump'
 HOME_EVENT_PATH          = 'root/UserParameters/home'
@@ -235,6 +239,22 @@ class MotorcortexInterface:
         if blocking:
             future.get()
 
+    # ── 발끝 상태 출력 ─────────────────────────────────────────────────────
+    def set_foot_state(self, pos_xyz, grf_xyz, blocking: bool = False):
+        """발끝 위치(Foot_POS) + 추정 반력(Foot_GRF) 원자적 동시 쓰기.
+
+        pos_xyz : (3,) [mm] 힙 원점 기준 발끝 좌표 (m × 1000 — 호출측 책임)
+        grf_xyz : (3,) [N]  추정 지면반력 (compute_grf 출력)
+        """
+        pos = [float(p) for p in pos_xyz[:3]]
+        grf = [float(f) for f in grf_xyz[:3]]
+        future = self._req.setParameterList([
+            {'path': FOOT_POS_PATH, 'value': pos},
+            {'path': FOOT_GRF_PATH, 'value': grf},
+        ])
+        if blocking:
+            future.get()
+
     # ── 구독 ─────────────────────────────────────────────────────────────────
     def subscribe_positions(self):
         """axesPositionsActual 부모 경로 구독, value[0~4] 인덱싱."""
@@ -316,7 +336,13 @@ class MotorcortexInterface:
         self._reset_event(MOVE_L_EVENT_PATH)
 
     def subscribe_force_s_event(self, cb: callable):
-        self._subscribe_event(FORCE_S_EVENT_PATH, 'forces_group', cb)
+        """forceS 토글 — 0→1 에지에서만 cb 발화.
+
+        pulse subscribe 시 GRID 버튼이 latched(1 유지)면 reset 0 직후 GRID가
+        다시 1로 끌어올려 콜백이 반복 발화 → 토글이 무한히 ON/OFF 되는 문제 회피.
+        forceT 와 동일한 level+에지 패턴 사용.
+        """
+        self._subscribe_level_event(FORCE_S_EVENT_PATH, 'forces_group', cb, None)
 
     def reset_force_s_event(self):
         self._reset_event(FORCE_S_EVENT_PATH)

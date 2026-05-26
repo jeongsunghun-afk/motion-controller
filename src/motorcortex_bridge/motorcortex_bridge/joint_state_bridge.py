@@ -199,6 +199,10 @@ class JointStateBridge(Node):
             ls.effort.append(0.0)
         self._pub_state.publish(ls)
 
+        # ── 발끝 상태 → MCX UserParameters (Foot_POS, Foot_GRF) ─────────
+        # 50Hz piggyback. 계산 실패는 publish_foot_state 내부에서 무시.
+        self._ctrl.publish_foot_state()
+
     # ── 모니터 로그 (0.5s) ───────────────────────────────────────────────────
     def _log_monitor(self):
         if not self._mcx.is_connected:
