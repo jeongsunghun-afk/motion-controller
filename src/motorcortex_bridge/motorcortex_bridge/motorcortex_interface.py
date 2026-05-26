@@ -45,6 +45,13 @@ TORQUE_ACTUAL_PATH_FMT  = (                                             # 실제
 FOOT_POS_PATH = 'root/UserParameters/Foot_POS'   # double[3] x,y,z [mm]  힙 원점 기준 FK (m × 1000)
 FOOT_GRF_PATH = 'root/UserParameters/Foot_GRF'   # double[3] x,y,z [N]   추정 지면반력
 
+# ── 임피던스/GRF 게인 동기화 (UserParameters, 양방향) ────────────────────────
+KP_IMP_PATH   = 'root/UserParameters/kp_imp'    # double[3] Cartesian 강성  [N/m]
+KD_IMP_PATH   = 'root/UserParameters/kd_imp'    # double[3] Cartesian 댐핑  [N·s/m]
+KF_GRF_PATH   = 'root/UserParameters/kf_grf'    # double[3] GRF 피드백 게인 (무차원)
+KP_JOINT_PATH = 'root/UserParameters/kp_joint'  # double[5] Joint 강성     [N·m/rad]  (앞 4축 사용, 5번째 toe 슬롯)
+KD_JOINT_PATH = 'root/UserParameters/kd_joint'  # double[5] Joint 댐핑     [N·m·s/rad] (앞 4축 사용)
+
 # ── 이벤트 경로 (GRID UserParameters) ──────────────────────────────────────────
 JUMP_EVENT_PATH          = 'root/UserParameters/jump'
 HOME_EVENT_PATH          = 'root/UserParameters/home'
@@ -53,6 +60,9 @@ MOVE_L_EVENT_PATH        = 'root/UserParameters/moveL'
 FORCE_S_EVENT_PATH       = 'root/UserParameters/forceS'
 FORCE_T_EVENT_PATH       = 'root/UserParameters/forceT'
 FORCE_F_EVENT_PATH       = 'root/UserParameters/forceF'
+FORCE_J_EVENT_PATH       = 'root/UserParameters/forceJ'
+
+RESET_GAIN_EVENT_PATH    = 'root/UserParameters/reset'
 GAIT_EVENT_PATH          = 'root/UserParameters/gait'
 SITTING_EVENT_PATH       = 'root/UserParameters/Sitting'
 STANDING_EVENT_PATH      = 'root/UserParameters/Standing'
@@ -239,6 +249,58 @@ class MotorcortexInterface:
         if blocking:
             future.get()
 
+    # ── 임피던스/GRF 게인 동기화 ──────────────────────────────────────────
+    def set_impedance_gains(self, kp_imp, kd_imp, kf_grf,
+                            kp_joint, kd_joint, blocking: bool = False):
+        """5개 임피던스 게인을 GRID UserParameters 에 송신 (startup 초기값).
+
+        kp_imp   : (3,) [N/m]      Cartesian 강성
+        kd_imp   : (3,) [N·s/m]    Cartesian 댐핑
+        kf_grf   : (3,)            GRF 피드백 게인 (무차원)
+        kp_joint : (4,) [N·m/rad]  Joint 강성  — 5-elem 으로 padding (5번째=0)
+        kd_joint : (4,) [N·m·s/rad] Joint 댐핑 — 5-elem 으로 padding
+        """
+        kp  = [float(v) for v in kp_imp[:3]]
+        kd  = [float(v) for v in kd_imp[:3]]
+        kf  = [float(v) for v in kf_grf[:3]]
+        kpj = [float(v) for v in kp_joint[:4]] + [0.0]   # toe 슬롯
+        kdj = [float(v) for v in kd_joint[:4]] + [0.0]
+        future = self._req.setParameterList([
+            {'path': KP_IMP_PATH,   'value': kp},
+            {'path': KD_IMP_PATH,   'value': kd},
+            {'path': KF_GRF_PATH,   'value': kf},
+            {'path': KP_JOINT_PATH, 'value': kpj},
+            {'path': KD_JOINT_PATH, 'value': kdj},
+        ])
+        if blocking:
+            future.get()
+
+    def subscribe_impedance_gains(self, callback: callable):
+        """GRID 5개 게인 변경 구독 (10 cycle = 100Hz delivery).
+
+        callback(kp_imp, kd_imp, kf_grf, kp_joint, kd_joint)
+          - kp_imp/kd_imp/kf_grf : list[float] 길이 3 또는 None
+          - kp_joint/kd_joint    : list[float] 길이 4 (5번째 toe 슬롯 잘라냄) 또는 None
+        """
+        sub = self._sub.subscribe(
+            [KP_IMP_PATH, KD_IMP_PATH, KF_GRF_PATH, KP_JOINT_PATH, KD_JOINT_PATH],
+            'imp_gain_group',
+            frq_divider=10,
+        )
+
+        def _cb(msg):
+            if not msg or len(msg) < 5:
+                return
+            kp   = [float(v) for v in msg[0].value[:3]] if msg[0].value else None
+            kd   = [float(v) for v in msg[1].value[:3]] if msg[1].value else None
+            kf   = [float(v) for v in msg[2].value[:3]] if msg[2].value else None
+            kpj  = [float(v) for v in msg[3].value[:4]] if msg[3].value else None
+            kdj  = [float(v) for v in msg[4].value[:4]] if msg[4].value else None
+            callback(kp, kd, kf, kpj, kdj)
+
+        sub.notify(_cb)
+        self._subs.append(sub)
+
     # ── 발끝 상태 출력 ─────────────────────────────────────────────────────
     def set_foot_state(self, pos_xyz, grf_xyz, blocking: bool = False):
         """발끝 위치(Foot_POS) + 추정 반력(Foot_GRF) 원자적 동시 쓰기.
@@ -360,6 +422,19 @@ class MotorcortexInterface:
 
     def reset_force_f_event(self):
         self._reset_event(FORCE_F_EVENT_PATH)
+
+    def subscribe_force_j_event(self, on_start: callable, on_stop: callable = None):
+        """forceJ 레벨 구독: value=1 → on_start (Joint impedance ON), value=0 → on_stop."""
+        self._subscribe_level_event(FORCE_J_EVENT_PATH, 'forcej_group', on_start, on_stop)
+
+    def reset_force_j_event(self):
+        self._reset_event(FORCE_J_EVENT_PATH)
+
+    def subscribe_reset_gain_event(self, cb: callable):
+        self._subscribe_level_event(RESET_GAIN_EVENT_PATH, 'reset_gain_group', cb, None)
+
+    def reset_reset_gain_event(self):
+        self._reset_event(RESET_GAIN_EVENT_PATH)
 
     def subscribe_gait_event(self, cb: callable):
         self._subscribe_event(GAIT_EVENT_PATH, 'gait_group', cb)
