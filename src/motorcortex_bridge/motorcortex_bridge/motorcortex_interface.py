@@ -87,7 +87,7 @@ NMPC_TROT_EVENT_PATH     = 'root/UserParameters/NMPC_trot'
 #   ch3 = HL_joint5_ankle_p
 #   ch4 = HL_joint6_toe_p    (read-only)
 
-N_AXES = 4
+N_AXES = 5
 NUM_CH = 6   # hostInJointPosition2 전체 채널 수
 
 JOINT_LOOP_MAP = [
@@ -271,8 +271,12 @@ class MotorcortexInterface:
         kp  = [float(v) for v in kp_imp[:3]]
         kd  = [float(v) for v in kd_imp[:3]]
         kf  = [float(v) for v in kf_grf[:3]]
-        kpj = [float(v) for v in kp_joint[:4]] + [0.0]   # toe 슬롯
-        kdj = [float(v) for v in kd_joint[:4]] + [0.0]
+        # GRID kp_joint/kd_joint = double[5] — N_AXES=5 면 그대로 매핑 (5번째=toe)
+        kpj = [float(v) for v in kp_joint[:N_AXES]]
+        kdj = [float(v) for v in kd_joint[:N_AXES]]
+        # GRID 가 5-elem 인데 N_AXES < 5 면 부족분 0 패딩
+        while len(kpj) < 5: kpj.append(0.0)
+        while len(kdj) < 5: kdj.append(0.0)
         future = self._req.setParameterList([
             {'path': KP_IMP_PATH,   'value': kp},
             {'path': KD_IMP_PATH,   'value': kd},
@@ -302,8 +306,8 @@ class MotorcortexInterface:
             kp   = [float(v) for v in msg[0].value[:3]] if msg[0].value else None
             kd   = [float(v) for v in msg[1].value[:3]] if msg[1].value else None
             kf   = [float(v) for v in msg[2].value[:3]] if msg[2].value else None
-            kpj  = [float(v) for v in msg[3].value[:4]] if msg[3].value else None
-            kdj  = [float(v) for v in msg[4].value[:4]] if msg[4].value else None
+            kpj  = [float(v) for v in msg[3].value[:N_AXES]] if msg[3].value else None
+            kdj  = [float(v) for v in msg[4].value[:N_AXES]] if msg[4].value else None
             callback(kp, kd, kf, kpj, kdj)
 
         sub.notify(_cb)

@@ -82,8 +82,8 @@ from motorcortex_bridge.motorcortex_interface import (
     N_AXES,
 )
 
-# ── 홈 자세 ────────────────────────────────────────────────────────────────────
-Q_HOME_DEG = [0.0, -150.0, -90.0, 90.0]
+# ── 홈 자세 (4축 leg + toe(5축) = 0°) ─────────────────────────────────────────
+Q_HOME_DEG = [0.0, -150.0, -90.0, 90.0, 0.0]
 Q_HOME_RAD = [math.radians(d) for d in Q_HOME_DEG]
 
 # ── 기본값 ─────────────────────────────────────────────────────────────────────
@@ -141,8 +141,8 @@ def _hermite_vel(s: float, T: float,
 KP_IMP   = np.array([ 80.0, 246.0, 246.0])   # Cartesian 강성 [N/m]  X(중력):≈80Nm/rad, Y/Z:≈80Nm/rad@hip
 KD_IMP   = np.array([  5.0,  15.0,  15.0])   # Cartesian 감쇠 [N·s/m] X(중력):≈5Nms/rad, Y/Z:≈5Nms/rad@hip
 KF_GRF   = np.array([  0.1,   0.1,   0.1])   # forceT GRF 피드백 게인 (무차원, force error → N)
-KP_JOINT = np.array([ 10.0,  30.0,  30.0,  10.0])   # Joint 강성 [N·m/rad]    (forceJ Mode A, 안전값)
-KD_JOINT = np.array([  1.0,   2.0,   2.0,   1.0])   # Joint 댐핑 [N·m·s/rad]  (forceJ Mode A, 안전값)
+KP_JOINT = np.array([ 10.0,  30.0,  30.0,  10.0,  5.0])   # Joint 강성 [N·m/rad]    (forceTJ, 5축=toe 보수적)
+KD_JOINT = np.array([  1.0,   2.0,   2.0,   1.0,  0.5])   # Joint 댐핑 [N·m·s/rad]  (forceTJ, 5축=toe 보수적)
 
 MU_DAMP = 1e-3                               # Jacobian 댐핑 계수 (특이점 방지)
 
@@ -464,8 +464,9 @@ def load_trajectory(filepath: str) -> list:
     """
     trajectory_jump.txt 로드.
     형식: frame\\tth1_deg\\tth2_deg\\tth3_deg\\tth4_deg
-    반환: list of tuple(th1, th2, th3, th4) [rad]
-    각 waypoint에서 Q_HOME_RAD를 빼서 반환 (홈 기준 상대 궤적).
+    반환: list of tuple(th1, th2, th3, th4, 0.0) [rad, MCX offset]
+    - 앞 4축은 Q_HOME_RAD 를 빼서 홈 기준 상대 궤적
+    - 5번째(toe) 는 0 패딩 — toe = home (MCX offset 0) 유지
     """
     waypoints = []
     with open(filepath, 'r') as f:
@@ -478,9 +479,11 @@ def load_trajectory(filepath: str) -> list:
                 continue
             if len(parts) < 5:
                 continue
-            waypoints.append(
-                tuple(math.radians(float(parts[i])) - Q_HOME_RAD[i - 1] for i in range(1, 5))
-            )
+            row = tuple(math.radians(float(parts[i])) - Q_HOME_RAD[i - 1] for i in range(1, 5))
+            # N_AXES = 5 면 toe(5축) 자리 0 패딩, N_AXES = 4 면 그대로
+            if N_AXES > 4:
+                row = row + tuple(0.0 for _ in range(N_AXES - 4))
+            waypoints.append(row)
     return waypoints
 
 
@@ -937,6 +940,9 @@ class MotionController:
             if log_cb:
                 log_cb('CSP_IDLE 진입 실패: IK 실패 — 중단')
             return
+        # analytical_ik 는 4축만 반환 — N_AXES>4 면 toe 자리를 home 으로 패딩
+        if len(q_r_phy) < N_AXES:
+            q_r_phy = list(q_r_phy) + [Q_HOME_RAD[i] for i in range(len(q_r_phy), N_AXES)]
         self._stance_q_r_mcx = _to_mcx(q_r_phy)
         self._stance_x_r     = x_r
         if log_cb:
@@ -1400,7 +1406,11 @@ class MotionController:
     # ── IK 루프 공통 헬퍼 ────────────────────────────────────────────────────
     def _ik_trajectory(self, cart_pts, phi: float, prev_phy: list,
                        log_cb=None, label: str = 'IK') -> list:
-        """cart_pts(Cartesian 위치 목록) → MCX offset 관절각 목록. IK 실패 시 이전 해 유지."""
+        """cart_pts(Cartesian 위치 목록) → MCX offset 관절각 목록.
+
+        IK 는 4축만 반환 — N_AXES>4 면 toe 자리를 home 으로 패딩.
+        IK 실패 시 이전 해 유지.
+        """
         dense_j = []
         for pt in cart_pts:
             r = analytical_ik(float(pt[0]), float(pt[1]), float(pt[2]), phi)
@@ -1408,6 +1418,9 @@ class MotionController:
                 if log_cb:
                     log_cb(f'{label} IK 실패: ({pt[0]*1e3:.1f},{pt[1]*1e3:.1f},{pt[2]*1e3:.1f})mm')
                 r = prev_phy
+            # 5축(toe) 이상 자리는 home 으로 패딩
+            if len(r) < N_AXES:
+                r = list(r) + [Q_HOME_RAD[i] for i in range(len(r), N_AXES)]
             prev_phy = r
             dense_j.append(_to_mcx(r))
         return dense_j
