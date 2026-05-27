@@ -56,7 +56,7 @@ ROS2 의존성 없음 — joint_state_bridge 에서 생성하여 사용
   opmode 전환 시 반대 모드 토글 강제 해제 (혼합 운전 방지)
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-SW joint safety limit (CST runaway 방어, v0.7.6+)
+SW joint safety limit (CST runaway 방어, v0.7.6 + 통합 idle v0.7.8)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   Q_LIMIT_LO_MCX / Q_LIMIT_HI_MCX (MCX joint offset 기준 rad) 위반 시
   Mode A/B 강제 해제 + axesTorquesInput=0 + STANDBY 복귀.
@@ -799,13 +799,22 @@ class MotionController:
 
     # ── 이벤트 콜백 (MCX GRID → Python Event) ────────────────────────────────
     def _on_idle_mode(self):
+        """JogMode/PauseMode 0 진입 에지 — STANDBY 진입.
+
+        _last_cmd_pos / _interp_* 를 현재 actual 로 잡아야 STANDBY 의
+        set_target_positions 가 즉시 0 으로 점프시키지 않는다.
+        """
         self._mcx.reset_additive()
+        try:
+            actual = list(self._mcx.actual_positions[:N_AXES])
+        except Exception:
+            actual = [0.0] * N_AXES
         with self._lock:
             self._traj_queue.clear()
             self._cart_queue.clear()
-            self._last_cmd_pos  = [0.0] * N_AXES
-            self._interp_prev   = [0.0] * N_AXES
-            self._interp_target = [0.0] * N_AXES
+            self._last_cmd_pos  = list(actual)
+            self._interp_prev   = list(actual)
+            self._interp_target = list(actual)
             self._interp_dq0    = [0.0] * N_AXES
             self._interp_dq1    = [0.0] * N_AXES
         self._ctrl_state = 'STANDBY'
@@ -1128,8 +1137,19 @@ class MotionController:
         self._force_tf_active = True
 
     def _on_force_tf_stop(self):
-        """forceTF=0 — τ_ff 채널 비활성."""
+        """forceTF=0 — τ_ff 채널 비활성. forceTC 도 같이 끔 (PF→PC 와 대칭).
+
+        Mode A 토글 케스케이드: TF OFF → TC 도 강제 OFF + GRID 동기화.
+        TC 단독 ON 운용을 원하면 forceTC 만 ON 하면 됨 (TF 와 독립).
+        """
         self._force_tf_active = False
+        if self._force_tc_active:
+            self._force_tc_active = False
+            self.kf_grf = np.zeros(3)
+            try:
+                self._mcx.reset_force_tc_event()
+            except Exception:
+                pass
 
     def _on_force_tc_start(self):
         """forceTC=1 — CST GRF FF+FB 활성. kf_grf 초기값 적용."""
@@ -1560,9 +1580,10 @@ class MotionController:
         HOME       → move_to_home_additive()가 event_loop 스레드에서 직접 제어
                       완료 시 STANDBY
         """
-        zero_torque  = [0.0] * N_AXES
-        x_a_prev     = np.zeros(3)
-        prev_state   = None
+        zero_torque        = [0.0] * N_AXES
+        x_a_prev           = np.zeros(3)
+        prev_state         = None
+        state_just_changed = False   # 첫 사이클 spurious damping 차단 플래그
 
         while True:
             t_next = time.monotonic() + HOLD_CYCLE
@@ -1580,7 +1601,10 @@ class MotionController:
                     x_a_prev = _fun_force_f(_to_phy(self._mcx.actual_positions))[0]
                 except Exception:
                     x_a_prev = np.zeros(3)
+                state_just_changed = True
                 prev_state = state
+            else:
+                state_just_changed = False
 
             # ── STANDBY ──────────────────────────────────────────────────
             if state == 'STANDBY':
@@ -1617,11 +1641,15 @@ class MotionController:
 
             # ── EXEC_TRAJ ────────────────────────────────────────────────
             elif state == 'EXEC_TRAJ':
+                # 명시 초기화 — wp=None 분기에서 dt/x_r_cart 가 stale 값 참조하는 race 방지
+                wp       = None
+                x_r_cart = None
+                dt       = self._traj_dt_active
+
                 if self._home_ev.is_set() and self._traj_label != 'homePos':
                     with self._lock:
                         self._traj_queue.clear()
                         self._cart_queue.clear()
-                    wp = None
                 else:
                     with self._lock:
                         if self._traj_queue:
@@ -1629,8 +1657,6 @@ class MotionController:
                             x_r_cart = self._cart_queue.popleft() if self._cart_queue else None
                             dt       = self._traj_dt_active
                             self._traj_idx += 1
-                        else:
-                            wp = None
 
                 if wp is None:
                     # 궤적 종료 — force* 토글 활성이면 idle state 로 직행 (STANDBY 윈도우 제거)
@@ -1681,7 +1707,9 @@ class MotionController:
                         if cart_active:
                             x_r    = (np.asarray(x_r_cart) if x_r_cart is not None
                                       else np.array(forward_kinematics(_to_phy(wp))[-1]))
-                            dx_a   = (x_a - x_a_prev) / dt
+                            # 진입 첫 사이클은 dx_a=0 강제 (stale x_a_prev → spurious damping 방지)
+                            dx_a   = (np.zeros(3) if state_just_changed
+                                      else (x_a - x_a_prev) / dt)
                             f_cart = self.kp_imp * (x_r - x_a) - self.kd_imp * dx_a
                             tau_arr = tau_arr + J.T @ f_cart
                         x_a_prev = x_a.copy()
@@ -1741,7 +1769,9 @@ class MotionController:
                     x_r             = self._stance_x_r
                     q_now_phy       = _to_phy(self._mcx.actual_positions)
                     x_a, J, tau_dyn = _fun_force_f(q_now_phy)
-                    dx_a            = (x_a - x_a_prev) / HOLD_CYCLE
+                    # 진입 첫 사이클은 dx_a=0 강제 (이전 state 의 stale x_a_prev → 큰 damping 토크 방지)
+                    dx_a            = (np.zeros(3) if state_just_changed
+                                       else (x_a - x_a_prev) / HOLD_CYCLE)
                     x_a_prev        = x_a.copy()
 
                     tau_arr = tau_dyn.copy()
@@ -2042,19 +2072,33 @@ class MotionController:
                     kd:  list = None,
                     tau: list = None):
         """
-        외부 제어기(RL 등) 명령 수신 — tracking 모드에서만 유효.
-        보간 시작점을 현재 진행률 기준으로 갱신하여 불연속 방지.
+        외부 제어기(RL 등) 명령 수신.
+
+        - _cmd_dq / _cmd_kp / _cmd_kd / _cmd_tau 는 모든 state 에서 갱신
+          (forceTF / forcePF τ_ff 채널이 모든 idle/EXEC_TRAJ 에서 _cmd_tau 소비)
+        - 위치 추종 보간 상태 (_last_cmd_pos / _interp_*) 는 RL_POLICY 에서만 갱신
+          → 다른 state 에서 외부 q 가 들어와도 STANDBY/idle 위치 점프 차단
 
         Parameters
         ----------
         q   : target joint positions  [rad]   (4축, 필수)
-        dq  : target joint velocities [rad/s] (선택, 현재 MCX 미지원)
-        kp  : position gains                  (선택, 현재 MCX 미지원)
-        kd  : velocity gains                  (선택, 현재 MCX 미지원)
-        tau : feedforward torques     [Nm]    (선택, 현재 MCX 미지원)
+        dq  : target joint velocities [rad/s] (선택)
+        kp  : position gains                  (선택)
+        kd  : velocity gains                  (선택)
+        tau : feedforward torques     [Nm]    (선택, τ_ff 채널)
         """
-        now = time.monotonic()
         with self._lock:
+            # τ_ff 등 modifier 채널 — 모든 state 에서 수신
+            self._cmd_dq  = list(dq)  if dq  is not None else [0.0]  * N_AXES
+            self._cmd_kp  = list(kp)  if kp  is not None else [20.0] * N_AXES
+            self._cmd_kd  = list(kd)  if kd  is not None else [0.5]  * N_AXES
+            self._cmd_tau = list(tau) if tau is not None else [0.0]  * N_AXES
+
+            # RL_POLICY 가 아니면 위치 추종 보간 상태 갱신 안 함
+            if self._ctrl_state != 'RL_POLICY':
+                return
+
+            now = time.monotonic()
             # 현재 Hermite 진행률로 시작점·속도 갱신 (C1 연속 보장)
             elapsed = now - self._interp_time
             s = min(elapsed / CMD_PERIOD, 1.0)
@@ -2077,12 +2121,7 @@ class MotionController:
             self._interp_target = list(q)
             self._interp_dq1    = new_dq1
             self._interp_time   = now
-
-            self._cmd_dq  = list(dq)  if dq  is not None else [0.0]  * N_AXES
-            self._cmd_kp  = list(kp)  if kp  is not None else [20.0] * N_AXES
-            self._cmd_kd  = list(kd)  if kd  is not None else [0.5]  * N_AXES
-            self._cmd_tau = list(tau) if tau is not None else [0.0]  * N_AXES
-            self._last_cmd_pos = list(q)
+            self._last_cmd_pos  = list(q)
 
     def get_monitor_snapshot(self) -> list:
         """모니터 로그용: [(tgt_rad, act_rad), ...] for ch0~ch3."""

@@ -132,8 +132,6 @@ class JointStateBridge(Node):
                                 for i in range(N_AXES))
                 )
 
-                self._ctrl._ctrl_ready = True
-
                 n = self._ctrl.start(log_cb=lambda s: self.get_logger().info(s))
                 self.get_logger().info(
                     f'궤적 로드: {n} waypoints — 이벤트 대기 중 (JumpEvent/HomeEvent/...)'
