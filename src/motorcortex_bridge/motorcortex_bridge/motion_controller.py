@@ -259,6 +259,35 @@ def compute_grf(tau_actual, tau_gravity, J: np.ndarray) -> np.ndarray:
     return np.linalg.solve(JJT, J @ (tau_a - tau_g))
 
 
+def compute_contact_torque(thetas: list, F_ref) -> np.ndarray:
+    """발끝 접지력 feedforward — τ = J^T · F_ref. (N_AXES,) [N·m].
+
+    F_ref : (3,) [N] — 발끝에서의 목표 Cartesian 힘 (힙 원점 기준, +X=위)
+    """
+    J = compute_jacobian(thetas)
+    return J.T @ np.asarray(F_ref, dtype=float)
+
+
+def compute_inertia_matrix(thetas: list) -> np.ndarray:
+    """Joint-space inertia matrix M(q) — point-mass approximation.
+
+    각 link COM 을 link 중점 점질량으로 근사 (inertia tensor 무시).
+    M(q) = Σ_i m_i · J_v_i^T · J_v_i  where J_v_i = ∂p_com_i / ∂q
+
+    반환: (N_AXES, N_AXES) [kg·m²]
+    """
+    origins, z_axes = _get_origins_zaxes(thetas)
+    n = len(thetas)
+    M = np.zeros((n, n))
+    for i in range(n):
+        p_com_i = (origins[i] + origins[i + 1]) / 2.0
+        J_v_i = np.zeros((3, n))
+        for j in range(i + 1):
+            J_v_i[:, j] = np.cross(z_axes[j], p_com_i - origins[j])
+        M += LINK_MASS[i] * (J_v_i.T @ J_v_i)
+    return M
+
+
 def compute_impedance_torque(x_r, x_a, J: np.ndarray,
                               dx_r=None, dx_a=None) -> np.ndarray:
     """
@@ -492,6 +521,7 @@ class MotionController:
         self._force_t_active   = False        # forceT 활성 플래그 (signal=1 → True, 0 → False)
         self._force_grf_active = False        # GRF 피드백 포함 여부: True=tau_dyn+tau_grf / False=tau_dyn only
         self.force_t_ref       = np.zeros(3)  # forceT 목표 GRF [N] (힙 원점 기준, 초기=0 → GRF 상쇄)
+        self.contact_force_ref = np.zeros(3)  # Phase 3 contact FF τ = J^T·F_ref [N] (open-loop)
         self._force_s_active   = False        # forceS 임피던스 토글
         self._force_s_last_ts  = 0.0          # forceS 디바운스 (콜백 재발화 차단, 200ms)
 
@@ -1509,6 +1539,9 @@ class MotionController:
                     cart_active  = np.any(kp) or np.any(kd) or np.any(kf)
                     joint_active = np.any(kpj) or np.any(kdj)
 
+                    # τ_ff: 외부 컨트롤러 (RL/MPC) 가 /low_cmd.effort 로 보낸 feedforward
+                    tau_ff_ext = np.array(self._cmd_tau, dtype=float)
+
                     if cart_active or joint_active:
                         q_now_phy       = _to_phy(self._mcx.actual_positions)
                         x_a, J, tau_dyn = _fun_force_f(q_now_phy)
@@ -1534,12 +1567,18 @@ class MotionController:
                             q_r_arr = np.array(wp[:N_AXES])
                             tau_arr = tau_arr + kpj * (q_r_arr - q_a_arr) - kdj * dq_a
 
+                        # Phase 3 — contact force FF
+                        if np.any(self.contact_force_ref):
+                            tau_arr = tau_arr + compute_contact_torque(q_now_phy, self.contact_force_ref)
+
+                        tau_arr = tau_arr + tau_ff_ext
                         tau = tau_arr.tolist()
                     else:
                         q_now_phy = _to_phy(self._mcx.actual_positions)
                         x_a_prev  = np.array(forward_kinematics(q_now_phy)[-1])
                         q_a_prev_arr = np.array(self._mcx.actual_positions[:N_AXES])
-                        tau       = zero_torque
+                        # impedance/gravity 없이 τ_ff 만 (드라이브 자체 위치 PID 가 위치 추종)
+                        tau = tau_ff_ext.tolist()
 
                     self._mcx.set_pos_and_torque(wp, tau)
                     with self._lock:
@@ -1617,8 +1656,16 @@ class MotionController:
                     q_a_prev_arr = q_a_arr.copy()
 
                     # Joint impedance PD (element-wise, 4축)
-                    tau_joint = self.kp_joint * (q_r_arr - q_a_arr) - self.kd_joint * dq_a
-                    tau = (tau_dyn + tau_joint).tolist()
+                    tau_imp = self.kp_joint * (q_r_arr - q_a_arr) - self.kd_joint * dq_a
+
+                    # τ_ff: 외부 컨트롤러 (RL/MPC) 가 /low_cmd.effort 로 보낸 feedforward
+                    tau_ff_ext = np.array(self._cmd_tau, dtype=float)
+
+                    # Phase 3 — contact force feedforward (J^T · F_ref, open-loop)
+                    tau_contact = (compute_contact_torque(q_now_phy, self.contact_force_ref)
+                                   if np.any(self.contact_force_ref) else np.zeros(N_AXES))
+
+                    tau = (tau_dyn + tau_imp + tau_ff_ext + tau_contact).tolist()
 
                     # 옵션 A: q_cmd = q_actual → MCX 내부 PD 무력화 → axesTorquesInput 단독 구동
                     q_cmd = list(actual[:N_AXES])
