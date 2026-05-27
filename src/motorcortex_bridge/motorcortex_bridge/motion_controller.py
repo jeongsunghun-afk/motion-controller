@@ -1592,19 +1592,17 @@ class MotionController:
                     self._ctrl_state = 'STANDBY'
                     self._traj_done_ev.set()
                 else:
-                    kp  = self.kp_imp
-                    kd  = self.kd_imp
-                    kf  = self.kf_grf
-                    kpj = self.kp_joint
-                    kdj = self.kd_joint
+                    # 명시적 플래그 게이팅 (FORCE_J_IDLE 과 대칭)
+                    cart_active    = self._force_s_active                                # forcePI (CSP)
+                    joint_active   = self._force_j_active                                # forceTJ (CST)
+                    grf_active     = self._force_grf_active or self._force_tc_active     # forcePC or forceTC
+                    ff_active      = self._force_tf_active or self._is_csp_mode()        # forceTF (CST) 또는 CSP 디폴트
+                    contact_active = np.any(self.contact_force_ref)                      # Phase 3 contact FF (open-loop)
 
-                    cart_active  = np.any(kp) or np.any(kd) or np.any(kf)
-                    joint_active = np.any(kpj) or np.any(kdj)
+                    any_active = (cart_active or joint_active or grf_active or
+                                  ff_active or contact_active)
 
-                    # τ_ff: 외부 컨트롤러 (RL/MPC) 가 /low_cmd.effort 로 보낸 feedforward
-                    tau_ff_ext = np.array(self._cmd_tau, dtype=float)
-
-                    if cart_active or joint_active:
+                    if any_active:
                         q_now_phy       = _to_phy(self._mcx.actual_positions)
                         x_a, J, tau_dyn = _fun_force_f(q_now_phy)
 
@@ -1614,34 +1612,40 @@ class MotionController:
 
                         tau_arr = tau_dyn.copy()
 
+                        # Cartesian impedance (CSP / forcePI)
                         if cart_active:
                             x_r    = (np.asarray(x_r_cart) if x_r_cart is not None
                                       else np.array(forward_kinematics(_to_phy(wp))[-1]))
                             dx_a   = (x_a - x_a_prev) / dt
-                            f_cart = kp * (x_r - x_a) - kd * dx_a
-                            if np.any(kf) or np.any(self.force_t_ref):
-                                grf_est = compute_grf(self._mcx.actual_torque, tau_dyn, J)
-                                # GRF FF+FB
-                                f_cart += self.force_t_ref + kf * (self.force_t_ref - grf_est)
+                            f_cart = self.kp_imp * (x_r - x_a) - self.kd_imp * dx_a
                             tau_arr = tau_arr + J.T @ f_cart
                         x_a_prev = x_a.copy()
 
+                        # Joint impedance (CST / forceTJ)
                         if joint_active:
                             q_r_arr = np.array(wp[:N_AXES])
-                            tau_arr = tau_arr + kpj * (q_r_arr - q_a_arr) - kdj * dq_a
+                            tau_arr = tau_arr + self.kp_joint * (q_r_arr - q_a_arr) - self.kd_joint * dq_a
 
-                        # Phase 3 — contact force FF
-                        if np.any(self.contact_force_ref):
+                        # GRF FF+FB (forcePC / forceTC)
+                        if grf_active:
+                            grf_est = compute_grf(self._mcx.actual_torque, tau_dyn, J)
+                            tau_arr = tau_arr + J.T @ (self.force_t_ref +
+                                                       self.kf_grf * (self.force_t_ref - grf_est))
+
+                        # Contact force FF (Phase 3, contact_force_ref non-zero)
+                        if contact_active:
                             tau_arr = tau_arr + compute_contact_torque(q_now_phy, self.contact_force_ref)
 
-                        tau_arr = tau_arr + tau_ff_ext
+                        # τ_ff_ext (CSP 항상 / CST forceTF 활성)
+                        if ff_active:
+                            tau_arr = tau_arr + np.array(self._cmd_tau, dtype=float)
+
                         tau = tau_arr.tolist()
                     else:
                         q_now_phy = _to_phy(self._mcx.actual_positions)
                         x_a_prev  = np.array(forward_kinematics(q_now_phy)[-1])
                         q_a_prev_arr = np.array(self._mcx.actual_positions[:N_AXES])
-                        # impedance/gravity 없이 τ_ff 만 (드라이브 자체 위치 PID 가 위치 추종)
-                        tau = tau_ff_ext.tolist()
+                        tau = zero_torque
 
                     self._mcx.set_pos_and_torque(wp, tau)
                     with self._lock:
