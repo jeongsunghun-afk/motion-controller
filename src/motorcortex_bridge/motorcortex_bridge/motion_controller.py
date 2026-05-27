@@ -34,15 +34,15 @@ ROS2 의존성 없음 — joint_state_bridge 에서 생성하여 사용
   home          — POS 직접 홈 복귀 (STANDBY 전용)
   homeAdditive  — ADDITIVE 홈 복귀 (비STANDBY)
 
-  [CSP — Cyclic Sync Position]
-  forcePI       — Cartesian impedance idle (현재 위치 유지, J^T·(kp_imp·Δx − kd_imp·ẋ))
-  forcePF       — τ_ff toggle (low_cmd.effort → 토크에 가산) + FORCE_PF_IDLE entry
-  forcePC       — GRF FF+FB toggle (J^T·(F_ref + kf_grf·(F_ref − F̂_GRF)))
+  [CSP — Cyclic Sync Position]  (※ 어느 토글이라도 ON → CSP_IDLE 진입 + 합성 토크)
+  forcePI       — Cartesian impedance       (J^T·(kp_imp·Δx − kd_imp·ẋ))
+  forcePF       — τ_ff toggle               (low_cmd.effort → 토크 가산)
+  forcePC       — GRF FF+FB toggle          (J^T·(F_ref + kf_grf·(F_ref − F̂_GRF)))
 
-  [CST — Cyclic Sync Torque]
-  forceTJ       — Joint impedance idle (kp_joint·Δq − kd_joint·q̇, 옵션 A q_cmd=q_actual)
-  forceTF       — τ_ff toggle (low_cmd.effort → 토크에 가산)
-  forceTC       — GRF FF+FB toggle (CST 측, forceTJ 와 병행 가능)
+  [CST — Cyclic Sync Torque]  (※ 어느 토글이라도 ON → CST_IDLE 진입 + 합성 토크, q_cmd=q_actual)
+  forceTJ       — Joint impedance           (kp_joint·Δq − kd_joint·q̇)
+  forceTF       — τ_ff toggle               (low_cmd.effort → 토크 가산)
+  forceTC       — GRF FF+FB toggle          (J^T·(F_ref + kf_grf·(F_ref − F̂_GRF)))
 
   [드라이브 모드 / 게인 관리]
   opmode        — 0=CSP / 1=CST (level+edge). 전환 시 q_cmd=q_a 동기화 + 반대 모드 자동 해제
@@ -522,7 +522,7 @@ class MotionController:
         self._lock = threading.Lock()
 
         # 상태 머신 (STANDBY / STANDING / RL_POLICY / EXEC_TRAJ /
-        #           FORCE_PF_IDLE / FORCE_PI_IDLE / FORCE_TJ_IDLE / HOME)
+        #           CSP_IDLE / CST_IDLE / HOME)
         self._ctrl_state = 'STANDBY'
 
         # 마지막 명령 위치 (위치 유지 / publish 참조용)
@@ -909,6 +909,55 @@ class MotionController:
         self._disable_mode_a()
         self._disable_mode_b()
 
+    # ── 통합 idle state 진입 헬퍼 (CSP_IDLE / CST_IDLE) ───────────────────────
+    def _any_csp_force_active(self) -> bool:
+        return self._force_pi_active or self._force_pf_active or self._force_pc_active
+
+    def _any_cst_force_active(self) -> bool:
+        return self._force_tj_active or self._force_tf_active or self._force_tc_active
+
+    def _enter_csp_idle(self, log_cb=None):
+        """CSP_IDLE 진입 — stance(IK 정합) 캡처 + state 전환. idempotent."""
+        if self._ctrl_state == 'CSP_IDLE':
+            return
+        q_a_phy = _to_phy(self._mcx.actual_positions)
+        x_r     = np.array(forward_kinematics(q_a_phy)[-1])
+        phi     = q_a_phy[1] + q_a_phy[2] + q_a_phy[3]
+        q_r_phy = analytical_ik(x_r[0], x_r[1], x_r[2], phi)
+        if q_r_phy is None:
+            if log_cb:
+                log_cb('CSP_IDLE 진입 실패: IK 실패 — 중단')
+            return
+        self._stance_q_r_mcx = _to_mcx(q_r_phy)
+        self._stance_x_r     = x_r
+        if log_cb:
+            log_cb(
+                f'CSP_IDLE 진입: ({x_r[0]*1e3:.1f}, {x_r[1]*1e3:.1f}, {x_r[2]*1e3:.1f}) mm  '
+                f'PI={"ON" if self._force_pi_active else "off"}  '
+                f'PF={"ON" if self._force_pf_active else "off"}  '
+                f'PC={"ON" if self._force_pc_active else "off"}'
+            )
+        self._ctrl_state = 'CSP_IDLE'
+
+    def _enter_cst_idle(self, log_cb=None):
+        """CST_IDLE 진입 — joint stance 캡처 (IK 불필요) + state 전환. idempotent."""
+        if self._ctrl_state == 'CST_IDLE':
+            return
+        actual    = self._mcx.actual_positions
+        q_a_mcx   = list(actual[:N_AXES])
+        self._stance_q_r_mcx = q_a_mcx
+        q_a_phy   = _to_phy(q_a_mcx)
+        self._stance_x_r     = np.array(forward_kinematics(q_a_phy)[-1])
+        if log_cb:
+            log_cb(
+                'CST_IDLE 진입: q_stance(deg)='
+                + ','.join(f'{math.degrees(q):+.1f}' for q in q_a_mcx)
+                + f'  TJ={"ON" if self._force_tj_active else "off"}'
+                + f'  TF={"ON" if self._force_tf_active else "off"}'
+                + f'  TC={"ON" if self._force_tc_active else "off"}'
+            )
+        self._ctrl_state = 'CST_IDLE'
+
     # ── SW joint position safety limit ───────────────────────────────────────
     def _check_joint_safety_limit(self, q_a_arr) -> int:
         """현재 actual joint position 한계 검사. 위반 축 index 반환, 정상이면 -1.
@@ -1051,11 +1100,11 @@ class MotionController:
         self.kf_grf = np.zeros(3)
 
     def _on_force_tj_start(self):
-        """forceJ=1 수신 — Joint impedance 활성 (Mode A).
+        """forceTJ=1 수신 — CST Joint impedance 토글 ON.
 
         GRID kp_joint/kd_joint 값을 live 게인에 복사.
-        실제 stance 캡처와 상태 전환은 event_loop 의 _run_force_tj_idle() 에서.
-        Mode B(forceS/T/F) 활성 중이면 자동 해제.
+        실제 stance 캡처와 상태 전환은 event_loop 의 _enter_cst_idle() 에서.
+        Mode B (forcePI/PF/PC) 활성 중이면 자동 해제.
         CSP 모드면 활성 거부 (CST 전용).
         """
         if self._is_csp_mode():
@@ -1316,82 +1365,17 @@ class MotionController:
                 time.sleep(0.05)
                 self._movel_ev.clear()
 
-            elif self._force_pf_active:
-                self._run_force_pf_idle(log_cb=log_cb)
+            elif self._any_csp_force_active():
+                self._enter_csp_idle(log_cb=log_cb)
                 time.sleep(0.001)
 
-            elif self._force_pi_active:
-                self._run_force_pi_idle(log_cb=log_cb)
-                time.sleep(0.001)
-
-            elif self._force_tj_active:
-                self._run_force_tj_idle(log_cb=log_cb)
+            elif self._any_cst_force_active():
+                self._enter_cst_idle(log_cb=log_cb)
                 time.sleep(0.001)
 
             else:
                 time.sleep(0.01)
 
-
-    # ── forceT idle: 현재 위치 기준 GRF 제어 ────────────────────────────────
-    def _run_force_pf_idle(self, log_cb=None):
-        """
-        forceT 활성 시 stance 위치 기준 GRF 제어.
-        _control_loop의 FORCE_PF_IDLE 상태로 위임 — 실제 200Hz 루프는 _control_loop가 실행.
-        non-blocking: stance 초기화 후 즉시 반환 — event_loop가 계속 이벤트를 처리.
-        """
-        if self._ctrl_state == 'FORCE_PF_IDLE':
-            return
-
-        q_a_phy = _to_phy(self._mcx.actual_positions)
-        x_r     = np.array(forward_kinematics(q_a_phy)[-1])
-        phi     = q_a_phy[1] + q_a_phy[2] + q_a_phy[3]
-
-        q_r_phy = analytical_ik(x_r[0], x_r[1], x_r[2], phi)
-        if q_r_phy is None:
-            if log_cb:
-                log_cb('forceT idle: IK 실패 — 중단')
-            return
-
-        self._stance_q_r_mcx = _to_mcx(q_r_phy)
-        self._stance_x_r     = x_r
-
-        if log_cb:
-            log_cb(
-                f'forceT idle 시작: '
-                f'({x_r[0]*1e3:.1f}, {x_r[1]*1e3:.1f}, {x_r[2]*1e3:.1f}) mm'
-                f'  GRF={"ON" if self._force_pc_active else "OFF"}'
-            )
-
-        self._ctrl_state = 'FORCE_PF_IDLE'
-
-    # ── forceJ idle: joint stance 기준 Joint impedance (Mode A) ─────────────
-    def _run_force_tj_idle(self, log_cb=None):
-        """
-        forceJ 활성 시 joint stance 기준 Joint impedance 제어.
-        _control_loop의 FORCE_TJ_IDLE 상태로 위임 — 200Hz 루프는 _control_loop가 실행.
-        non-blocking: stance 초기화 후 즉시 반환.
-
-        Cartesian 과 달리 IK 불필요 — joint actual 을 그대로 stance 로 저장.
-        """
-        if self._ctrl_state == 'FORCE_TJ_IDLE':
-            return
-
-        actual = self._mcx.actual_positions
-        q_a_mcx = list(actual[:N_AXES])
-        self._stance_q_r_mcx = q_a_mcx
-        # Cartesian stance 도 같이 갱신 (GRF 등 참조용)
-        q_a_phy = _to_phy(q_a_mcx)
-        self._stance_x_r = np.array(forward_kinematics(q_a_phy)[-1])
-
-        if log_cb:
-            log_cb(
-                f'forceJ idle 시작 (Mode A): q_stance(deg)='
-                + ','.join(f'{math.degrees(q):+.1f}' for q in q_a_mcx)
-                + f'  kp_joint={[round(v, 2) for v in self.kp_joint]}'
-                + f'  kd_joint={[round(v, 2) for v in self.kd_joint]}'
-            )
-
-        self._ctrl_state = 'FORCE_TJ_IDLE'
 
     # ── IK 루프 공통 헬퍼 ────────────────────────────────────────────────────
     def _ik_trajectory(self, cart_pts, phi: float, prev_phy: list,
@@ -1407,37 +1391,6 @@ class MotionController:
             prev_phy = r
             dense_j.append(_to_mcx(r))
         return dense_j
-
-    # ── forceS idle: 현재 위치 임피던스 유지 ────────────────────────────────────
-    def _run_force_pi_idle(self, log_cb=None):
-        """
-        forceS 단독 활성 시 stance 위치 기준 임피던스 루프.
-        _control_loop의 FORCE_PI_IDLE 상태로 위임.
-        non-blocking: stance 초기화 후 즉시 반환 — event_loop가 계속 이벤트를 처리.
-        """
-        if self._ctrl_state == 'FORCE_PI_IDLE':
-            return
-
-        q_a_phy = _to_phy(self._mcx.actual_positions)
-        x_r     = np.array(forward_kinematics(q_a_phy)[-1])
-        phi     = q_a_phy[1] + q_a_phy[2] + q_a_phy[3]
-
-        q_r_phy = analytical_ik(x_r[0], x_r[1], x_r[2], phi)
-        if q_r_phy is None:
-            if log_cb:
-                log_cb('forceS idle: IK 실패 — 중단')
-            return
-
-        self._stance_q_r_mcx = _to_mcx(q_r_phy)
-        self._stance_x_r     = x_r
-
-        if log_cb:
-            log_cb(
-                f'forceS idle 시작: '
-                f'({x_r[0]*1e3:.1f}, {x_r[1]*1e3:.1f}, {x_r[2]*1e3:.1f}) mm'
-            )
-
-        self._ctrl_state = 'FORCE_PI_IDLE'
 
     # ── 궤적 큐 적재 (비차단) ────────────────────────────────────────────────
     def _load_exec_traj(self, waypoints, dt: float, label: str,
@@ -1588,18 +1541,24 @@ class MotionController:
     # ── 단일 200Hz 제어 루프 (상태 머신) ─────────────────────────────────────
     def _control_loop(self):
         """
-        STANDBY       → last_cmd_pos 유지 (set_target_positions)
-        STANDING      → last_cmd_pos 유지 (RL_POLICY / EXEC_TRAJ 대기)
-        RL_POLICY     → set_command() 50Hz 입력을 200Hz 선형 보간
-        EXEC_TRAJ     → home_ev 감지 시 queue 클리어
-                         wp 소모 → set_pos_and_torque(wp, tau)
-                         큐 소진 → STANDBY + traj_done_ev.set()
-        FORCE_PF_IDLE  → force_t_active=False → 토크 0, STANDBY
-                         force_t_active=True  → GRF 임피던스 제어
-        FORCE_PI_IDLE  → force_s_active=False → 토크 0, STANDBY
-                         force_s_active=True  → 임피던스 제어
-        HOME          → move_to_home_additive()가 event_loop 스레드에서 직접 제어
-                         완료 시 STANDBY
+        STANDBY    → last_cmd_pos 유지 (set_target_positions)
+        STANDING   → last_cmd_pos 유지 (RL_POLICY / EXEC_TRAJ 대기)
+        RL_POLICY  → set_command() 50Hz 입력을 200Hz Hermite 보간
+        EXEC_TRAJ  → home_ev 감지 시 queue 클리어
+                      wp 소모 → set_pos_and_torque(wp, tau) (mode flag 합성)
+                      큐 소진 → force* 활성이면 idle, 아니면 STANDBY
+        CSP_IDLE   → q_cmd = stance, tau = tau_dyn
+                      + (forcePI ? J^T·(kp_imp·Δx − kd_imp·ẋ)         : 0)
+                      + (forcePF ? _cmd_tau                            : 0)
+                      + (forcePC ? J^T·(F_ref + kf·(F_ref − F̂_GRF))   : 0)
+                      모든 CSP 토글 OFF → 토크 0, STANDBY
+        CST_IDLE   → q_cmd = q_actual (옵션 A), tau = tau_dyn
+                      + (forceTJ ? kp_j·(stance − q_a) − kd_j·q̇        : 0)
+                      + (forceTF ? _cmd_tau                            : 0)
+                      + (forceTC ? J^T·(F_ref + kf·(F_ref − F̂_GRF))   : 0)
+                      모든 CST 토글 OFF → 토크 0, STANDBY
+        HOME       → move_to_home_additive()가 event_loop 스레드에서 직접 제어
+                      완료 시 STANDBY
         """
         zero_torque  = [0.0] * N_AXES
         x_a_prev     = np.zeros(3)
@@ -1674,19 +1633,25 @@ class MotionController:
                             wp = None
 
                 if wp is None:
+                    # 궤적 종료 — force* 토글 활성이면 idle state 로 직행 (STANDBY 윈도우 제거)
                     self._mcx.set_target_torques(zero_torque)
-                    with self._lock:
-                        self._interp_prev   = list(self._last_cmd_pos)
-                        self._interp_target = list(self._last_cmd_pos)
-                    self._ctrl_state = 'STANDBY'
+                    if self._any_csp_force_active():
+                        self._enter_csp_idle()
+                    elif self._any_cst_force_active():
+                        self._enter_cst_idle()
+                    else:
+                        with self._lock:
+                            self._interp_prev   = list(self._last_cmd_pos)
+                            self._interp_target = list(self._last_cmd_pos)
+                        self._ctrl_state = 'STANDBY'
                     self._traj_done_ev.set()
                 else:
-                    # 명시적 플래그 게이팅 (FORCE_TJ_IDLE 과 대칭)
-                    cart_active    = self._force_pi_active                                # forcePI (CSP)
-                    joint_active   = self._force_tj_active                                # forceTJ (CST)
-                    grf_active     = self._force_pc_active or self._force_tc_active     # forcePC or forceTC
-                    ff_active      = self._force_tf_active or self._is_csp_mode()        # forceTF (CST) 또는 CSP 디폴트
-                    contact_active = np.any(self.contact_force_ref)                      # Phase 3 contact FF (open-loop)
+                    # 명시적 플래그 게이팅 (CSP_IDLE / CST_IDLE 와 동일한 합성 패턴)
+                    cart_active    = self._force_pi_active                              # forcePI (CSP)
+                    joint_active   = self._force_tj_active                              # forceTJ (CST)
+                    grf_active     = self._force_pc_active or self._force_tc_active    # forcePC or forceTC
+                    ff_active      = self._force_pf_active or self._force_tf_active    # forcePF / forceTF (대칭 게이트)
+                    contact_active = np.any(self.contact_force_ref)                    # Phase 3 contact FF (open-loop)
 
                     any_active = (cart_active or joint_active or grf_active or
                                   ff_active or contact_active)
@@ -1736,7 +1701,7 @@ class MotionController:
                         if contact_active:
                             tau_arr = tau_arr + compute_contact_torque(q_now_phy, self.contact_force_ref)
 
-                        # τ_ff_ext (CSP 항상 / CST forceTF 활성)
+                        # τ_ff_ext — forcePF (CSP) or forceTF (CST) 활성 시
                         if ff_active:
                             tau_arr = tau_arr + np.array(self._cmd_tau, dtype=float)
 
@@ -1750,9 +1715,11 @@ class MotionController:
                     with self._lock:
                         self._last_cmd_pos = wp
 
-            # ── FORCE_PF_IDLE ─────────────────────────────────────────────
-            elif state == 'FORCE_PF_IDLE':
-                if not self._force_pf_active:
+            # ── CSP_IDLE (forcePI / forcePF / forcePC 토글 합성) ──────────
+            #   q_cmd = stance (드라이브 내부 위치제어), tau = tau_dyn + 각 토글 항
+            elif state == 'CSP_IDLE':
+                if not self._any_csp_force_active():
+                    # 모든 CSP 토글 OFF → STANDBY 복귀, snap-back 없도록 stance 캐싱
                     self._mcx.set_target_torques(zero_torque)
                     q_r_mcx = self._stance_q_r_mcx
                     with self._lock:
@@ -1761,61 +1728,7 @@ class MotionController:
                         self._interp_target = list(q_r_mcx)
                     self._ctrl_state = 'STANDBY'
                 else:
-                    q_r_mcx         = self._stance_q_r_mcx
-                    x_r             = self._stance_x_r
-                    q_now_phy       = _to_phy(self._mcx.actual_positions)
-                    x_a, J, tau_dyn = _fun_force_f(q_now_phy)
-                    dx_a            = (x_a - x_a_prev) / HOLD_CYCLE
-                    x_a_prev        = x_a.copy()
-
-                    f_cart = self.kp_imp * (x_r - x_a) - self.kd_imp * dx_a
-                    if np.any(self.kf_grf) or np.any(self.force_t_ref):
-                        grf_est = compute_grf(self._mcx.actual_torque, tau_dyn, J)
-                        # GRF FF+FB: baseline F_ref + correction K_f·(F_ref−F̂_GRF)
-                        f_cart += self.force_t_ref + self.kf_grf * (self.force_t_ref - grf_est)
-
-                    tau = (tau_dyn + J.T @ f_cart).tolist()
-                    self._mcx.set_pos_and_torque(q_r_mcx, tau)
-
-            # ── FORCE_PI_IDLE ─────────────────────────────────────────────
-            elif state == 'FORCE_PI_IDLE':
-                if not self._force_pi_active:
-                    self._mcx.set_target_torques(zero_torque)
-                    q_r_mcx = self._stance_q_r_mcx
-                    with self._lock:
-                        self._last_cmd_pos  = list(q_r_mcx)
-                        self._interp_prev   = list(q_r_mcx)
-                        self._interp_target = list(q_r_mcx)
-                    self._ctrl_state = 'STANDBY'
-                else:
-                    q_r_mcx         = self._stance_q_r_mcx
-                    x_r             = self._stance_x_r
-                    q_now_phy       = _to_phy(self._mcx.actual_positions)
-                    x_a, J, tau_dyn = _fun_force_f(q_now_phy)
-                    dx_a            = (x_a - x_a_prev) / HOLD_CYCLE
-                    x_a_prev        = x_a.copy()
-
-                    f_cart = self.kp_imp * (x_r - x_a) - self.kd_imp * dx_a
-                    tau = (tau_dyn + J.T @ f_cart).tolist()
-                    self._mcx.set_pos_and_torque(q_r_mcx, tau)
-
-            # ── FORCE_TJ_IDLE (Mode A — Joint impedance + 옵션 A) ──────────
-            elif state == 'FORCE_TJ_IDLE':
-                if not self._force_tj_active:
-                    # OFF transition: q_cmd 가 그동안 actual 추종했으므로
-                    # last_cmd_pos 도 current actual 로 잡아야 snap-back 없음
-                    self._mcx.set_target_torques(zero_torque)
-                    cur = list(self._mcx.actual_positions[:N_AXES])
-                    with self._lock:
-                        self._last_cmd_pos  = cur
-                        self._interp_prev   = cur
-                        self._interp_target = cur
-                    self._ctrl_state = 'STANDBY'
-                else:
-                    actual    = self._mcx.actual_positions
-                    q_a_arr   = np.array(actual[:N_AXES])
-
-                    # ── SW joint safety limit (CST runaway 차단) ────────
+                    q_a_arr = np.array(self._mcx.actual_positions[:N_AXES])
                     bad = self._check_joint_safety_limit(q_a_arr)
                     if bad >= 0:
                         self._handle_limit_violation(q_a_arr, bad)
@@ -1824,33 +1737,80 @@ class MotionController:
                             time.sleep(slack)
                         continue
 
-                    q_r_arr   = np.array(self._stance_q_r_mcx)
+                    q_r_mcx         = self._stance_q_r_mcx
+                    x_r             = self._stance_x_r
+                    q_now_phy       = _to_phy(self._mcx.actual_positions)
+                    x_a, J, tau_dyn = _fun_force_f(q_now_phy)
+                    dx_a            = (x_a - x_a_prev) / HOLD_CYCLE
+                    x_a_prev        = x_a.copy()
+
+                    tau_arr = tau_dyn.copy()
+
+                    # forcePI — Cartesian impedance (J^T·f_cart)
+                    if self._force_pi_active:
+                        f_cart = self.kp_imp * (x_r - x_a) - self.kd_imp * dx_a
+                        tau_arr = tau_arr + J.T @ f_cart
+
+                    # forcePF — CSP τ_ff (외부 명령 _cmd_tau)
+                    if self._force_pf_active:
+                        tau_arr = tau_arr + np.array(self._cmd_tau, dtype=float)
+
+                    # forcePC — GRF FF+FB
+                    if self._force_pc_active:
+                        grf_est = compute_grf(self._mcx.actual_torque, tau_dyn, J)
+                        f_grf   = self.force_t_ref + self.kf_grf * (self.force_t_ref - grf_est)
+                        tau_arr = tau_arr + J.T @ f_grf
+
+                    self._mcx.set_pos_and_torque(q_r_mcx, tau_arr.tolist())
+
+            # ── CST_IDLE (forceTJ / forceTF / forceTC 토글 합성, 옵션 A) ───
+            #   q_cmd = q_actual (드라이브 내부 PD 무력화), tau = tau_dyn + 각 토글 항
+            elif state == 'CST_IDLE':
+                if not self._any_cst_force_active():
+                    # 모든 CST 토글 OFF → STANDBY 복귀, snap-back 없도록 actual 캐싱
+                    self._mcx.set_target_torques(zero_torque)
+                    cur = list(self._mcx.actual_positions[:N_AXES])
+                    with self._lock:
+                        self._last_cmd_pos  = cur
+                        self._interp_prev   = cur
+                        self._interp_target = cur
+                    self._ctrl_state = 'STANDBY'
+                else:
+                    actual  = self._mcx.actual_positions
+                    q_a_arr = np.array(actual[:N_AXES])
+
+                    bad = self._check_joint_safety_limit(q_a_arr)
+                    if bad >= 0:
+                        self._handle_limit_violation(q_a_arr, bad)
+                        slack = t_next - time.monotonic()
+                        if slack > 0:
+                            time.sleep(slack)
+                        continue
+
                     q_now_phy = _to_phy(actual)
                     x_a, J, tau_dyn = _fun_force_f(q_now_phy)
-
-                    # 드라이브 측정 관절속도 [rad/s] — 필터링된 값, backward diff 양자화 노이즈 회피
                     dq_a = np.array(self._mcx.actual_velocities[:N_AXES])
 
-                    # Joint impedance PD (element-wise, 4축)
-                    tau_imp = self.kp_joint * (q_r_arr - q_a_arr) - self.kd_joint * dq_a
+                    tau_arr = tau_dyn.copy()
 
-                    tau_arr = tau_dyn + tau_imp
+                    # forceTJ — Joint impedance PD (stance 기준)
+                    if self._force_tj_active:
+                        q_r_arr = np.array(self._stance_q_r_mcx)
+                        tau_arr = tau_arr + self.kp_joint * (q_r_arr - q_a_arr) - self.kd_joint * dq_a
 
-                    # forceTF — 외부 τ_ff 채널 (/low_cmd.effort)
+                    # forceTF — CST τ_ff (외부 명령 _cmd_tau)
                     if self._force_tf_active:
                         tau_arr = tau_arr + np.array(self._cmd_tau, dtype=float)
 
-                    # forceTC — GRF FF+FB: τ = Jᵀ·(F_ref + K_f·(F_ref − F̂_GRF))
+                    # forceTC — GRF FF+FB
                     if self._force_tc_active:
                         grf_est = compute_grf(self._mcx.actual_torque, tau_dyn, J)
-                        f_total = self.force_t_ref + self.kf_grf * (self.force_t_ref - grf_est)
-                        tau_arr = tau_arr + J.T @ f_total
+                        f_grf   = self.force_t_ref + self.kf_grf * (self.force_t_ref - grf_est)
+                        tau_arr = tau_arr + J.T @ f_grf
 
-                    tau = tau_arr.tolist()
-
-                    # 옵션 A: q_cmd = q_actual → MCX 내부 PD 무력화 → axesTorquesInput 단독 구동
+                    # 옵션 A: q_cmd = q_actual → 드라이브 내부 PD 무력화
                     q_cmd = list(actual[:N_AXES])
-                    self._mcx.set_pos_and_torque(q_cmd, tau)
+                    self._mcx.set_pos_and_torque(q_cmd, tau_arr.tolist())
                     with self._lock:
                         self._last_cmd_pos = q_cmd
 
@@ -2035,7 +1995,7 @@ class MotionController:
         for _ in range(20):
             if self._ctrl_state == 'STANDBY':
                 break
-            if self._ctrl_state in ('FORCE_PF_IDLE', 'FORCE_PI_IDLE', 'FORCE_TJ_IDLE'):
+            if self._ctrl_state in ('CSP_IDLE', 'CST_IDLE'):
                 time.sleep(0.005)
                 continue
             break
