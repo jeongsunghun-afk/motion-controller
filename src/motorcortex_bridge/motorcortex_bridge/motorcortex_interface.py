@@ -63,6 +63,9 @@ FORCE_F_EVENT_PATH       = 'root/UserParameters/forceF'
 FORCE_J_EVENT_PATH       = 'root/UserParameters/forceJ'
 
 RESET_GAIN_EVENT_PATH    = 'root/UserParameters/reset'
+
+DRIVE_MODE_PATH = 'root/DriveLogic/driveMode'   # int[6] — CIA402 Mode of Operation (8=CSP, 10=CST)
+OPMODE_PATH     = 'root/UserParameters/opmode'  # int   — 0=CSP, 1=CST (단일 토글, level+에지)
 GAIT_EVENT_PATH          = 'root/UserParameters/gait'
 SITTING_EVENT_PATH       = 'root/UserParameters/Sitting'
 STANDING_EVENT_PATH      = 'root/UserParameters/Standing'
@@ -435,6 +438,28 @@ class MotorcortexInterface:
 
     def reset_reset_gain_event(self):
         self._reset_event(RESET_GAIN_EVENT_PATH)
+
+    def set_drive_mode(self, modes: list, blocking: bool = True):
+        """root/DriveLogic/driveMode 에 6채널 모드 송신. 8=CSP, 10=CST."""
+        cmd = [int(m) for m in modes[:6]] + [0] * max(0, 6 - len(modes))
+        future = self._req.setParameter(DRIVE_MODE_PATH, cmd[:6])
+        if blocking:
+            future.get()
+
+    def get_drive_mode(self):
+        """현재 drive mode 읽기. 반환: list[int] 길이 6 또는 None (실패)."""
+        try:
+            result = self._req.getParameter(DRIVE_MODE_PATH).get()
+            if result and result.value:
+                return [int(v) for v in result.value]
+        except Exception:
+            pass
+        return None
+
+    def subscribe_opmode_event(self, on_cst: callable, on_csp: callable):
+        """opmode: 0=CSP, 1=CST. 0→1 에지에서 on_cst, 1→0 에지에서 on_csp 발화.
+        startup 시 첫 delivery 에서도 현재 값에 맞춰 한 번 fire."""
+        self._subscribe_level_event(OPMODE_PATH, 'opmode_group', on_cst, on_csp)
 
     def subscribe_gait_event(self, cb: callable):
         self._subscribe_event(GAIT_EVENT_PATH, 'gait_group', cb)

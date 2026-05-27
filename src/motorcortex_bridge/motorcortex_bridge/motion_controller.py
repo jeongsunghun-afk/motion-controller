@@ -112,6 +112,7 @@ KD_IMP   = np.array([  5.0,  15.0,  15.0])   # Cartesian 감쇠 [N·s/m] X(중�
 KF_GRF   = np.array([  0.1,   0.1,   0.1])   # forceT GRF 피드백 게인 (무차원, force error → N)
 KP_JOINT = np.array([ 10.0,  30.0,  30.0,  10.0])   # Joint 강성 [N·m/rad]    (forceJ Mode A, 안전값)
 KD_JOINT = np.array([  1.0,   2.0,   2.0,   1.0])   # Joint 댐핑 [N·m·s/rad]  (forceJ Mode A, 안전값)
+
 MU_DAMP = 1e-3                               # Jacobian 댐핑 계수 (특이점 방지)
 
 # ── Gait2 페이즈별 게인 ──────────────────────────────────────────────────────
@@ -679,6 +680,24 @@ class MotionController:
             if log_cb:
                 log_cb(f'Reset 버튼 구독 실패: {e}')
 
+        try:
+            current_mode = self._mcx.get_drive_mode()
+            if log_cb:
+                if current_mode is not None:
+                    log_cb(f'Drive mode (root/DriveLogic/driveMode): {current_mode}  '
+                           f'[8=CSP, 10=CST]')
+                else:
+                    log_cb('Drive mode 읽기 실패')
+        except Exception as e:
+            if log_cb:
+                log_cb(f'Drive mode 읽기 예외: {e}')
+
+        try:
+            self._mcx.subscribe_opmode_event(self._on_cst_mode, self._on_csp_mode)
+        except Exception as e:
+            if log_cb:
+                log_cb(f'opmode 이벤트 구독 실패: {e}')
+
         # event_loop 의 idle 게이트 강제 해제.
         # subscribe_idle_mode 는 (gotoJogMode==0 AND gotoPauseMode==0) 0→1 에지에서만
         # _idle_ev.set() 을 호출하는데, services_config.json 이 JogMode=1 로 운용을
@@ -893,6 +912,38 @@ class MotionController:
         self._force_j_active = False
         self.kp_joint = np.zeros(N_AXES)
         self.kd_joint = np.zeros(N_AXES)
+
+    def _on_cst_mode(self):
+        # CSP→CST 전환 — CST 와 호환 안 되는 Mode B (forceS/T/F) 만 해제, forceJ 는 유지
+        # 위치 동기화 후 모드 전환
+        self._disable_mode_b()
+        try:
+            actual = list(self._mcx.actual_positions[:N_AXES])
+            self._mcx.set_target_positions(actual, blocking=True)
+            with self._lock:
+                self._last_cmd_pos  = actual
+                self._interp_prev   = actual
+                self._interp_target = actual
+            time.sleep(0.01)
+            self._mcx.set_drive_mode([10] * 6, blocking=True)
+        except Exception:
+            pass
+
+    def _on_csp_mode(self):
+        # CST→CSP 전환 — CSP 와 페어인 Mode B 는 유지, Mode A (forceJ) 해제
+        # 위치 동기화 후 모드 전환
+        self._disable_mode_a()
+        try:
+            actual = list(self._mcx.actual_positions[:N_AXES])
+            self._mcx.set_target_positions(actual, blocking=True)
+            with self._lock:
+                self._last_cmd_pos  = actual
+                self._interp_prev   = actual
+                self._interp_target = actual
+            time.sleep(0.01)
+            self._mcx.set_drive_mode([8] * 6, blocking=True)
+        except Exception:
+            pass
 
     def _on_reset_gains(self):
         self._kp_imp_grid   = KP_IMP.copy()
