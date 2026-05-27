@@ -766,6 +766,13 @@ class MotionController:
                 log_cb(f'Reset 버튼 구독 실패: {e}')
 
         try:
+            self._mcx.reset_torque_reset_event()
+            self._mcx.subscribe_torque_reset_event(self._on_torque_reset)
+        except Exception as e:
+            if log_cb:
+                log_cb(f'torque_reset 버튼 구독 실패: {e}')
+
+        try:
             current_mode = self._mcx.get_drive_mode()
             if current_mode and len(current_mode) >= 1:
                 self._current_drive_mode = int(current_mode[0])
@@ -1230,7 +1237,38 @@ class MotionController:
         except Exception:
             pass
 
-    def _on_gain_update(self, kp, kd, kf, kpj, kdj):
+    def _on_torque_reset(self):
+        """torque_reset 버튼 — 사용자 명시적 비상 정지.
+
+        EMG 해제 후 stance 와 actual 이 어긋난 채 force 토글이 ON 인 상태에서
+        토크가 큰 값으로 즉시 방출되는 위험을 차단. 동작:
+          - 모든 force 토글 OFF (_disable_mode_a + _disable_mode_b)
+          - axesTorquesInput = 0 (잔여 토크 즉시 클리어)
+          - q_cmd = q_actual snap (위치 점프 방지)
+          - STANDBY 전환
+          - 로그 1회
+
+        SW joint limit 위반 시 자동 발화되는 _handle_limit_violation 의 사용자-호출 버전.
+        """
+        self._disable_mode_a()
+        self._disable_mode_b()
+
+        try:
+            self._mcx.set_target_torques([0.0] * N_AXES)
+        except Exception:
+            pass
+
+        cur = list(self._mcx.actual_positions[:N_AXES])
+        with self._lock:
+            self._last_cmd_pos  = cur
+            self._interp_prev   = cur
+            self._interp_target = cur
+        self._ctrl_state = 'STANDBY'
+
+        if self._safety_log_cb:
+            self._safety_log_cb(
+                '🛑 torque_reset: 모든 force 토글 OFF + axesTorquesInput=0 + STANDBY 복귀'
+            )
         """GRID 5개 게인 변경 콜백 (kp_imp, kd_imp, kf_grf, kp_joint, kd_joint).
 
         _*_grid 캐시 갱신. 해당 모드 활성 중이면 live 게인(self.kp_imp 등)도

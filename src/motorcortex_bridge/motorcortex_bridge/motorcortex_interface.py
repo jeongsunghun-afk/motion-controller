@@ -67,6 +67,7 @@ FORCE_TF_EVENT_PATH      = 'root/UserParameters/forceTF' # CST τ_ff toggle
 FORCE_TC_EVENT_PATH      = 'root/UserParameters/forceTC' # CST GRF FF+FB toggle
 
 RESET_GAIN_EVENT_PATH    = 'root/UserParameters/reset'
+TORQUE_RESET_EVENT_PATH  = 'root/UserParameters/torque_reset'   # EMG 복귀: 모든 force 토글 OFF + tau=0 + STANDBY
 
 DRIVE_MODE_PATH = 'root/DriveLogic/driveMode'   # int[6] — CIA402 Mode of Operation (8=CSP, 10=CST)
 OPMODE_PATH     = 'root/UserParameters/opmode'  # int   — 0=CSP, 1=CST (단일 토글, level+에지)
@@ -87,7 +88,7 @@ NMPC_TROT_EVENT_PATH     = 'root/UserParameters/NMPC_trot'
 #   ch3 = HL_joint5_ankle_p
 #   ch4 = HL_joint6_toe_p    (read-only)
 
-N_AXES = 5
+N_AXES = 5   # 제어축 수 (toe 제외)
 NUM_CH = 6   # hostInJointPosition2 전체 채널 수
 
 JOINT_LOOP_MAP = [
@@ -479,6 +480,13 @@ class MotorcortexInterface:
 
     def reset_reset_gain_event(self):
         self._reset_event(RESET_GAIN_EVENT_PATH)
+
+    def subscribe_torque_reset_event(self, cb: callable):
+        """torque_reset 버튼 — 0→1 에지에서 cb 발화. 사용자 명시적 비상 정지용."""
+        self._subscribe_level_event(TORQUE_RESET_EVENT_PATH, 'torque_reset_group', cb, None)
+
+    def reset_torque_reset_event(self):
+        self._reset_event(TORQUE_RESET_EVENT_PATH)
 
     def set_drive_mode(self, modes: list, blocking: bool = True):
         """root/DriveLogic/driveMode 에 6채널 모드 송신. 8=CSP, 10=CST."""
