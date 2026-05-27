@@ -543,6 +543,8 @@ class MotionController:
         self._kp_joint_grid = KP_JOINT.copy()
         self._kd_joint_grid = KD_JOINT.copy()
         self._force_j_active = False       # forceJ 토글 — level+에지로 시작/종료
+        self._force_tf_active = False      # forceTF (CST τ_ff 채널 토글)
+        self._force_tc_active = False      # forceTC (CST GRF FF+FB 토글)
         self._gait_ev          = threading.Event()   # Gait
 
         # moveL 목표 좌표 (힙 원점 기준, [m])  — 외부에서 set_movel_target()으로 설정
@@ -686,6 +688,10 @@ class MotionController:
         self._mcx.subscribe_force_t_event(self._on_force_t_start, self._on_force_t_stop)
         self._mcx.subscribe_force_f_event(self._on_force_f_start, self._on_force_f_stop)
         self._mcx.subscribe_force_j_event(self._on_force_j_start, self._on_force_j_stop)
+        self._mcx.reset_force_tf_event()
+        self._mcx.reset_force_tc_event()
+        self._mcx.subscribe_force_tf_event(self._on_force_tf_start, self._on_force_tf_stop)
+        self._mcx.subscribe_force_tc_event(self._on_force_tc_start, self._on_force_tc_stop)
         self._mcx.subscribe_gait_event(self._on_gait)
 
         # GRID 임피던스/GRF/Joint 게인 동기화 — 초기 상수값 송신 + 변경 구독
@@ -816,6 +822,19 @@ class MotionController:
                 self._mcx.reset_force_j_event()
             except Exception:
                 pass
+        if self._force_tf_active:
+            self._force_tf_active = False
+            try:
+                self._mcx.reset_force_tf_event()
+            except Exception:
+                pass
+        if self._force_tc_active:
+            self._force_tc_active = False
+            self.kf_grf = np.zeros(3)
+            try:
+                self._mcx.reset_force_tc_event()
+            except Exception:
+                pass
 
     def _disable_mode_b(self):
         if self._force_s_active or self._force_t_active or self._force_grf_active:
@@ -942,6 +961,26 @@ class MotionController:
         self._force_j_active = False
         self.kp_joint = np.zeros(N_AXES)
         self.kd_joint = np.zeros(N_AXES)
+
+    def _on_force_tf_start(self):
+        """forceTF=1 — CST τ_ff 채널 활성."""
+        self._disable_mode_b()
+        self._force_tf_active = True
+
+    def _on_force_tf_stop(self):
+        """forceTF=0 — τ_ff 채널 비활성."""
+        self._force_tf_active = False
+
+    def _on_force_tc_start(self):
+        """forceTC=1 — CST GRF FF+FB 활성. kf_grf 초기값 적용."""
+        self._disable_mode_b()
+        self._force_tc_active = True
+        self.kf_grf = self._kf_grf_grid.copy()
+
+    def _on_force_tc_stop(self):
+        """forceTC=0 — GRF FF+FB 비활성."""
+        self._force_tc_active = False
+        self.kf_grf = np.zeros(3)
 
     def _on_cst_mode(self):
         # CSP→CST 전환 — CST 와 호환 안 되는 Mode B (forceS/T/F) 만 해제, forceJ 는 유지
@@ -1557,9 +1596,10 @@ class MotionController:
                                       else np.array(forward_kinematics(_to_phy(wp))[-1]))
                             dx_a   = (x_a - x_a_prev) / dt
                             f_cart = kp * (x_r - x_a) - kd * dx_a
-                            if np.any(kf):
+                            if np.any(kf) or np.any(self.force_t_ref):
                                 grf_est = compute_grf(self._mcx.actual_torque, tau_dyn, J)
-                                f_cart += kf * (self.force_t_ref - grf_est)
+                                # GRF FF+FB
+                                f_cart += self.force_t_ref + kf * (self.force_t_ref - grf_est)
                             tau_arr = tau_arr + J.T @ f_cart
                         x_a_prev = x_a.copy()
 
@@ -1603,9 +1643,10 @@ class MotionController:
                     x_a_prev        = x_a.copy()
 
                     f_cart = self.kp_imp * (x_r - x_a) - self.kd_imp * dx_a
-                    if np.any(self.kf_grf):
+                    if np.any(self.kf_grf) or np.any(self.force_t_ref):
                         grf_est = compute_grf(self._mcx.actual_torque, tau_dyn, J)
-                        f_cart += self.kf_grf * (self.force_t_ref - grf_est)
+                        # GRF FF+FB: baseline F_ref + correction K_f·(F_ref−F̂_GRF)
+                        f_cart += self.force_t_ref + self.kf_grf * (self.force_t_ref - grf_est)
 
                     tau = (tau_dyn + J.T @ f_cart).tolist()
                     self._mcx.set_pos_and_torque(q_r_mcx, tau)
@@ -1649,7 +1690,7 @@ class MotionController:
                     q_a_arr   = np.array(actual[:N_AXES])
                     q_r_arr   = np.array(self._stance_q_r_mcx)
                     q_now_phy = _to_phy(actual)
-                    _, _, tau_dyn = _fun_force_f(q_now_phy)
+                    x_a, J, tau_dyn = _fun_force_f(q_now_phy)
 
                     # 관절속도 추정 (1차 차분)
                     dq_a = (q_a_arr - q_a_prev_arr) / HOLD_CYCLE
@@ -1658,14 +1699,19 @@ class MotionController:
                     # Joint impedance PD (element-wise, 4축)
                     tau_imp = self.kp_joint * (q_r_arr - q_a_arr) - self.kd_joint * dq_a
 
-                    # τ_ff: 외부 컨트롤러 (RL/MPC) 가 /low_cmd.effort 로 보낸 feedforward
-                    tau_ff_ext = np.array(self._cmd_tau, dtype=float)
+                    tau_arr = tau_dyn + tau_imp
 
-                    # Phase 3 — contact force feedforward (J^T · F_ref, open-loop)
-                    tau_contact = (compute_contact_torque(q_now_phy, self.contact_force_ref)
-                                   if np.any(self.contact_force_ref) else np.zeros(N_AXES))
+                    # forceTF — 외부 τ_ff 채널 (/low_cmd.effort)
+                    if self._force_tf_active:
+                        tau_arr = tau_arr + np.array(self._cmd_tau, dtype=float)
 
-                    tau = (tau_dyn + tau_imp + tau_ff_ext + tau_contact).tolist()
+                    # forceTC — GRF FF+FB: τ = Jᵀ·(F_ref + K_f·(F_ref − F̂_GRF))
+                    if self._force_tc_active:
+                        grf_est = compute_grf(self._mcx.actual_torque, tau_dyn, J)
+                        f_total = self.force_t_ref + self.kf_grf * (self.force_t_ref - grf_est)
+                        tau_arr = tau_arr + J.T @ f_total
+
+                    tau = tau_arr.tolist()
 
                     # 옵션 A: q_cmd = q_actual → MCX 내부 PD 무력화 → axesTorquesInput 단독 구동
                     q_cmd = list(actual[:N_AXES])

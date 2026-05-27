@@ -61,6 +61,8 @@ FORCE_S_EVENT_PATH       = 'root/UserParameters/forceS'
 FORCE_T_EVENT_PATH       = 'root/UserParameters/forceT'
 FORCE_F_EVENT_PATH       = 'root/UserParameters/forceF'
 FORCE_J_EVENT_PATH       = 'root/UserParameters/forceJ'
+FORCE_TF_EVENT_PATH      = 'root/UserParameters/forceTF'
+FORCE_TC_EVENT_PATH      = 'root/UserParameters/forceTC'
 
 RESET_GAIN_EVENT_PATH    = 'root/UserParameters/reset'
 
@@ -432,6 +434,20 @@ class MotorcortexInterface:
 
     def reset_force_j_event(self):
         self._reset_event(FORCE_J_EVENT_PATH)
+
+    def subscribe_force_tf_event(self, on_start: callable, on_stop: callable = None):
+        """forceTF (CST τ_ff toggle) — level+에지."""
+        self._subscribe_level_event(FORCE_TF_EVENT_PATH, 'forcetf_group', on_start, on_stop)
+
+    def reset_force_tf_event(self):
+        self._reset_event(FORCE_TF_EVENT_PATH)
+
+    def subscribe_force_tc_event(self, on_start: callable, on_stop: callable = None):
+        """forceTC (CST GRF FF+FB toggle) — level+에지."""
+        self._subscribe_level_event(FORCE_TC_EVENT_PATH, 'forcetc_group', on_start, on_stop)
+
+    def reset_force_tc_event(self):
+        self._reset_event(FORCE_TC_EVENT_PATH)
 
     def subscribe_reset_gain_event(self, cb: callable):
         self._subscribe_level_event(RESET_GAIN_EVENT_PATH, 'reset_gain_group', cb, None)
