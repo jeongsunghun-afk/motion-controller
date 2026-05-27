@@ -34,7 +34,9 @@ PAUSE_MODE_PATH     = 'root/MachineControl/gotoPauseMode'
 # ── 위치제어경로 ──────────────────────────────────────────────────────────
 ADDITIVE_CMD_PATH   = 'root/MachineControl/hostInJointAdditivePosition2'  # additive [rad]
 POS_CMD_PATH       = 'root/MachineControl/hostInJointPosition2'              # 절대 위치 [rad] (배열, 6ch) — ch0~3 = 제어축, ch4~5 = 토우/예비 (0 고정)
-ACTUAL_PATH        = 'root/AxesControl/axesPositionsActual'   # 부모 경로, value[0~4] 인덱싱
+ACTUAL_PATH        = 'root/AxesControl/axesPositionsActual'   # 부모 경로, value[0~4] 인덱싱 [rad]
+VELOCITY_PATH      = 'root/AxesControl/axesVelocitiesActual'  # 부모 경로, value[0~4] 인덱싱 [rad/s]
+                                                              # ※ GRID 단위 = rad/s 로 설정 필요
 # ── 토크 제어 경로 ────────────────────────────────────────────────────────────
 TORQUE_INPUT_PATH       = 'root/AxesControl/axesTorquesInput'          # 토크 입력 (배열, Nm) — 읽기/쓰기
 TORQUE_ACTUAL_PATH_FMT  = (                                             # 실제 토크 (스칼라, Nm) — {:02d} = 축 번호 (1-based)
@@ -61,8 +63,8 @@ FORCE_PI_EVENT_PATH       = 'root/UserParameters/forcePI'   # CSP Cartesian Impe
 FORCE_PF_EVENT_PATH       = 'root/UserParameters/forcePF'   # CSP τ_ff (외부 channel)
 FORCE_PC_EVENT_PATH       = 'root/UserParameters/forcePC'   # CSP GRF FF+FB
 FORCE_TJ_EVENT_PATH       = 'root/UserParameters/forceTJ'  # CST Joint Impedance
-FORCE_TF_EVENT_PATH      = 'root/UserParameters/forceTF'
-FORCE_TC_EVENT_PATH      = 'root/UserParameters/forceTC'
+FORCE_TF_EVENT_PATH      = 'root/UserParameters/forceTF' # CST τ_ff toggle
+FORCE_TC_EVENT_PATH      = 'root/UserParameters/forceTC' # CST GRF FF+FB toggle
 
 RESET_GAIN_EVENT_PATH    = 'root/UserParameters/reset'
 
@@ -114,6 +116,7 @@ class MotorcortexInterface:
 
         self._lock            = threading.Lock()
         self._actual_pos_rad  = [0.0] * len(JOINT_LOOP_MAP)
+        self._actual_vel_rps  = [0.0] * len(JOINT_LOOP_MAP)   # axesVelocitiesActual [rad/s]
         self._last_target_rad = [0.0] * N_AXES
         self._actual_torque   = [0.0] * N_AXES   # actuatorTorqueActual (Nm)
         self._base_pos        = [0.0] * N_AXES   # JogMode 진입 시점 절대 위치 (additive 기준)
@@ -335,6 +338,24 @@ class MotorcortexInterface:
 
         sub_pos.notify(_cb_pos)
         self._subs.append(sub_pos)
+
+    def subscribe_velocities(self):
+        """axesVelocitiesActual 부모 경로 구독 [rad/s], value[0~4] 인덱싱.
+
+        드라이브 내부 필터링된 motor velocity — backward difference 보다
+        양자화 노이즈가 훨씬 적어 임피던스 PD 의 kd·dq_a 항 안정화.
+        ※ GRID 측 단위 = rad/s 로 설정되어 있어야 함.
+        """
+        sub_vel = self._sub.subscribe([VELOCITY_PATH], 'vel_group', frq_divider=1)
+
+        def _cb_vel(msg):
+            if msg and msg[0].value:
+                with self._lock:
+                    for i in range(len(JOINT_LOOP_MAP)):
+                        self._actual_vel_rps[i] = float(msg[0].value[i])
+
+        sub_vel.notify(_cb_vel)
+        self._subs.append(sub_vel)
 
     # ── 이벤트 구독 헬퍼 ──────────────────────────────────────────────────────────
     def _subscribe_event(self, path: str, group: str, callback: callable):
@@ -584,6 +605,12 @@ class MotorcortexInterface:
     def actual_positions(self) -> list:
         with self._lock:
             return list(self._actual_pos_rad)
+
+    @property
+    def actual_velocities(self) -> list:
+        """드라이브 측 측정 관절 속도 [rad/s] (필터링됨, len=len(JOINT_LOOP_MAP))."""
+        with self._lock:
+            return list(self._actual_vel_rps)
 
     @property
     def actual_torque(self) -> list:

@@ -120,6 +120,7 @@ class JointStateBridge(Node):
                 # self.get_logger().info('JogMode 활성')
 
                 self._mcx.subscribe_positions()
+                self._mcx.subscribe_velocities()
                 self._mcx.subscribe_torque_actual()
 
                 actual = self._mcx.get_actual_positions_snapshot()
@@ -175,6 +176,8 @@ class JointStateBridge(Node):
         now = TimeMsg(sec=ns // 10**9, nanosec=ns % 10**9)
 
         actual_pos = self._mcx.actual_positions
+        actual_vel = self._mcx.actual_velocities
+        actual_tau = self._mcx.actual_torque
 
         # ── /joint_states (RViz) ─────────────────────────────────────────
         js = JointState()
@@ -183,8 +186,8 @@ class JointStateBridge(Node):
         for i, (name, _) in enumerate(JOINT_LOOP_MAP):
             js.name.append(name)
             js.position.append(actual_pos[i])
-            js.velocity.append(0.0)
-            js.effort.append(0.0)
+            js.velocity.append(actual_vel[i] if i < len(actual_vel) else 0.0)
+            js.effort.append(actual_tau[i] if i < len(actual_tau) else 0.0)
         self._pub_joint.publish(js)
         self._pub_count += 1
 
@@ -195,8 +198,8 @@ class JointStateBridge(Node):
         for i in range(N_AXES):
             ls.name.append(JOINT_LOOP_MAP[i][0])
             ls.position.append(actual_pos[i])
-            ls.velocity.append(0.0)
-            ls.effort.append(0.0)
+            ls.velocity.append(actual_vel[i] if i < len(actual_vel) else 0.0)
+            ls.effort.append(actual_tau[i] if i < len(actual_tau) else 0.0)
         self._pub_state.publish(ls)
 
         # ── 발끝 상태 → MCX UserParameters (Foot_POS, Foot_GRF) ─────────
@@ -219,8 +222,13 @@ class JointStateBridge(Node):
         except Exception:
             return
 
+        # 드라이브 측정 관절속도 (단위 확인용 — rad/s 가정 시 °/s 변환 표시)
+        vel = self._mcx.actual_velocities
+
         ch_info = '  |  '.join(
-            f'ch{i} tgt={math.degrees(r[0]):+7.2f}° act={math.degrees(r[1]):+7.2f}°'
+            f'ch{i} tgt={math.degrees(r[0]):+7.2f}° '
+            f'act={math.degrees(r[1]):+7.2f}° '
+            f'vel={math.degrees(vel[i]) if i < len(vel) else 0.0:+7.1f}°/s'
             for i, r in enumerate(rows)
         )
         self.get_logger().info(f'[{rate:.1f}Hz]  {ch_info}')

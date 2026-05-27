@@ -1,6 +1,6 @@
 """
 motion_controller.py
-궤적 실행 / moveJ / moveL / forceS / forceT / 제어 루프 / 이벤트 처리 전담 클래스
+궤적 실행 / moveJ / moveL / 임피던스 / GRF 제어 / 제어 루프 / 이벤트 처리 전담 클래스
 ROS2 의존성 없음 — joint_state_bridge 에서 생성하여 사용
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -11,24 +11,55 @@ ROS2 의존성 없음 — joint_state_bridge 에서 생성하여 사용
     Fall Recovery → STANDBY 복귀
 
   [Leg_test 이벤트]
-    Jump, Gait, moveL, ForceT, ForceS
+    Jump, Gait, moveL,
+    forcePI / forcePF / forcePC  (CSP — Cartesian Impedance / τ_ff / GRF)
+    forceTJ / forceTF / forceTC  (CST — Joint Impedance / τ_ff / GRF)
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 이벤트 경로 (GRID root/UserParameters/*)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  [자세/모드]
   Sitting       — sitting 자세 전환 (→ STANDBY)
   Standing      — standing 자세 전환 (→ STANDING)
-  RL_trot       — RL 명령 추종 (50Hz → 200Hz 선형 보간, → RL_POLICY 상태)
+  RL_trot       — RL 명령 추종 (50Hz → 200Hz Hermite 보간, → RL_POLICY 상태)
   MPC_trot      — MPC trot (stub, 구현 TODO)
   MPC_stairs    — MPC 계단 보행 (stub, 구현 TODO)
   NMPC_trot     — NMPC trot (stub, 구현 TODO)
-  Fall recovery — 낙상 복구
-  jump          — 점프 궤적 실행 (.txt)
-  gait          — Bezier 발걸음 패턴 (이전 moveL 구현)
+  Fall recovery — 낙상 복구 (stub, 구현 TODO)
+
+  [액션]
+  jump          — 점프 궤적 실행 (.txt waypoint)
+  gait          — Bezier 발걸음 패턴
   moveL         — Cartesian quintic polynomial 직선 이동
-  forceT        — 발끝 고정 + 실측 토크 → GRF 추정 임피던스 제어
-  forceF        — forceT 내 GRF 피드백 ON/OFF (레벨 신호, forceT 활성 시 유효)
-  forceS        — moveL 임피던스 모드 토글 (ON시 moveL에 GRF+임피던스 토크 추가)
+  home          — POS 직접 홈 복귀 (STANDBY 전용)
+  homeAdditive  — ADDITIVE 홈 복귀 (비STANDBY)
+
+  [CSP — Cyclic Sync Position]
+  forcePI       — Cartesian impedance idle (현재 위치 유지, J^T·(kp_imp·Δx − kd_imp·ẋ))
+  forcePF       — τ_ff toggle (low_cmd.effort → 토크에 가산) + FORCE_PF_IDLE entry
+  forcePC       — GRF FF+FB toggle (J^T·(F_ref + kf_grf·(F_ref − F̂_GRF)))
+
+  [CST — Cyclic Sync Torque]
+  forceTJ       — Joint impedance idle (kp_joint·Δq − kd_joint·q̇, 옵션 A q_cmd=q_actual)
+  forceTF       — τ_ff toggle (low_cmd.effort → 토크에 가산)
+  forceTC       — GRF FF+FB toggle (CST 측, forceTJ 와 병행 가능)
+
+  [드라이브 모드 / 게인 관리]
+  opmode        — 0=CSP / 1=CST (level+edge). 전환 시 q_cmd=q_a 동기화 + 반대 모드 자동 해제
+  reset         — kp_imp/kd_imp/kf_grf/kp_joint/kd_joint default 복원
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+상호 배타 (Mode A ↔ Mode B)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  Mode A = CST 측 (forceTJ / forceTF / forceTC) — opmode=1 일 때만 활성 허용
+  Mode B = CSP 측 (forcePI / forcePF / forcePC) — opmode=0 일 때만 활성 허용
+  opmode 전환 시 반대 모드 토글 강제 해제 (혼합 운전 방지)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SW joint safety limit (CST runaway 방어, v0.7.6+)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  Q_LIMIT_LO_MCX / Q_LIMIT_HI_MCX (MCX joint offset 기준 rad) 위반 시
+  Mode A/B 강제 해제 + axesTorquesInput=0 + STANDBY 복귀.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 RL_trot 보간 (3차 Hermite, C1 연속):
@@ -1572,7 +1603,6 @@ class MotionController:
         """
         zero_torque  = [0.0] * N_AXES
         x_a_prev     = np.zeros(3)
-        q_a_prev_arr = np.zeros(N_AXES)   # FORCE_TJ_IDLE 의 q̇_a 추정용
         prev_state   = None
 
         while True:
@@ -1588,11 +1618,9 @@ class MotionController:
 
             if state != prev_state:
                 try:
-                    x_a_prev     = _fun_force_f(_to_phy(self._mcx.actual_positions))[0]
-                    q_a_prev_arr = np.array(self._mcx.actual_positions[:N_AXES])
+                    x_a_prev = _fun_force_f(_to_phy(self._mcx.actual_positions))[0]
                 except Exception:
-                    x_a_prev     = np.zeros(3)
-                    q_a_prev_arr = np.zeros(N_AXES)
+                    x_a_prev = np.zeros(3)
                 prev_state = state
 
             # ── STANDBY ──────────────────────────────────────────────────
@@ -1679,8 +1707,8 @@ class MotionController:
                         q_now_phy       = _to_phy(self._mcx.actual_positions)
                         x_a, J, tau_dyn = _fun_force_f(q_now_phy)
 
-                        dq_a    = (q_a_arr - q_a_prev_arr) / dt
-                        q_a_prev_arr = q_a_arr.copy()
+                        # 드라이브 측정 관절속도 [rad/s] (필터링됨, backward diff 회피)
+                        dq_a = np.array(self._mcx.actual_velocities[:N_AXES])
 
                         tau_arr = tau_dyn.copy()
 
@@ -1716,7 +1744,6 @@ class MotionController:
                     else:
                         q_now_phy = _to_phy(self._mcx.actual_positions)
                         x_a_prev  = np.array(forward_kinematics(q_now_phy)[-1])
-                        q_a_prev_arr = np.array(self._mcx.actual_positions[:N_AXES])
                         tau = zero_torque
 
                     self._mcx.set_pos_and_torque(wp, tau)
@@ -1801,9 +1828,8 @@ class MotionController:
                     q_now_phy = _to_phy(actual)
                     x_a, J, tau_dyn = _fun_force_f(q_now_phy)
 
-                    # 관절속도 추정 (1차 차분)
-                    dq_a = (q_a_arr - q_a_prev_arr) / HOLD_CYCLE
-                    q_a_prev_arr = q_a_arr.copy()
+                    # 드라이브 측정 관절속도 [rad/s] — 필터링된 값, backward diff 양자화 노이즈 회피
+                    dq_a = np.array(self._mcx.actual_velocities[:N_AXES])
 
                     # Joint impedance PD (element-wise, 4축)
                     tau_imp = self.kp_joint * (q_r_arr - q_a_arr) - self.kd_joint * dq_a
