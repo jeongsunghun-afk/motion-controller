@@ -57,10 +57,10 @@ JUMP_EVENT_PATH          = 'root/UserParameters/jump'
 HOME_EVENT_PATH          = 'root/UserParameters/home'
 HOME_ADDITIVE_EVENT_PATH = 'root/UserParameters/homeAdditive'
 MOVE_L_EVENT_PATH        = 'root/UserParameters/moveL'
-FORCE_S_EVENT_PATH       = 'root/UserParameters/forceS'
-FORCE_T_EVENT_PATH       = 'root/UserParameters/forceT'
-FORCE_F_EVENT_PATH       = 'root/UserParameters/forceF'
-FORCE_J_EVENT_PATH       = 'root/UserParameters/forceJ'
+FORCE_S_EVENT_PATH       = 'root/UserParameters/forcePI'   # (이전 forceS, CSP Cartesian Impedance)
+FORCE_T_EVENT_PATH       = 'root/UserParameters/forcePF'   # (이전 forceT, CSP τ_ff)
+FORCE_F_EVENT_PATH       = 'root/UserParameters/forcePC'   # (이전 forceF, CSP GRF FF+FB)
+FORCE_J_EVENT_PATH       = 'root/UserParameters/forceTJ'  # (이전 forceJ, CST Joint Impedance)
 FORCE_TF_EVENT_PATH      = 'root/UserParameters/forceTF'
 FORCE_TC_EVENT_PATH      = 'root/UserParameters/forceTC'
 

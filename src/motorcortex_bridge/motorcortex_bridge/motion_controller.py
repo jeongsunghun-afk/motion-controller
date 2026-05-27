@@ -545,6 +545,7 @@ class MotionController:
         self._force_j_active = False       # forceJ 토글 — level+에지로 시작/종료
         self._force_tf_active = False      # forceTF (CST τ_ff 채널 토글)
         self._force_tc_active = False      # forceTC (CST GRF FF+FB 토글)
+        self._current_drive_mode = None    # 8=CSP, 10=CST, None=미상 (mode 가드용)
         self._gait_ev          = threading.Event()   # Gait
 
         # moveL 목표 좌표 (힙 원점 기준, [m])  — 외부에서 set_movel_target()으로 설정
@@ -718,6 +719,8 @@ class MotionController:
 
         try:
             current_mode = self._mcx.get_drive_mode()
+            if current_mode and len(current_mode) >= 1:
+                self._current_drive_mode = int(current_mode[0])
             if log_cb:
                 if current_mode is not None:
                     log_cb(f'Drive mode (root/DriveLogic/driveMode): {current_mode}  '
@@ -813,6 +816,12 @@ class MotionController:
         if self._ctrl_state not in ('EXEC_TRAJ', 'HOME', 'RL_POLICY'):
             self._jump_ev.set()
 
+    def _is_csp_mode(self):
+        return self._current_drive_mode == 8
+
+    def _is_cst_mode(self):
+        return self._current_drive_mode == 10
+
     def _disable_mode_a(self):
         if self._force_j_active:
             self._force_j_active = False
@@ -897,6 +906,9 @@ class MotionController:
         if now - self._force_s_last_ts < 0.2:
             return
         self._force_s_last_ts = now
+        # CST 모드에서 forceS 활성 시도 차단
+        if self._is_cst_mode() and not self._force_s_active:
+            return
         self._force_s_active = not self._force_s_active
         if self._force_s_active:
             self._disable_mode_a()
@@ -913,6 +925,8 @@ class MotionController:
         reset 호출 안 함 — 호출하면 1→0 에지가 즉시 만들어져
         on_stop(_on_force_t_stop) 이 발화, forceT 가 바로 꺼져버린다.
         """
+        if self._is_cst_mode():
+            return
         self._disable_mode_a()
         self._force_t_active = True
 
@@ -950,7 +964,10 @@ class MotionController:
         GRID kp_joint/kd_joint 값을 live 게인에 복사.
         실제 stance 캡처와 상태 전환은 event_loop 의 _run_force_j_idle() 에서.
         Mode B(forceS/T/F) 활성 중이면 자동 해제.
+        CSP 모드면 활성 거부 (CST 전용).
         """
+        if self._is_csp_mode():
+            return
         self._disable_mode_b()
         self._force_j_active = True
         self.kp_joint = self._kp_joint_grid.copy()
@@ -964,6 +981,8 @@ class MotionController:
 
     def _on_force_tf_start(self):
         """forceTF=1 — CST τ_ff 채널 활성."""
+        if self._is_csp_mode():
+            return
         self._disable_mode_b()
         self._force_tf_active = True
 
@@ -973,6 +992,8 @@ class MotionController:
 
     def _on_force_tc_start(self):
         """forceTC=1 — CST GRF FF+FB 활성. kf_grf 초기값 적용."""
+        if self._is_csp_mode():
+            return
         self._disable_mode_b()
         self._force_tc_active = True
         self.kf_grf = self._kf_grf_grid.copy()
@@ -995,6 +1016,7 @@ class MotionController:
                 self._interp_target = actual
             time.sleep(0.01)
             self._mcx.set_drive_mode([10] * 6, blocking=True)
+            self._current_drive_mode = 10
         except Exception:
             pass
 
@@ -1011,6 +1033,7 @@ class MotionController:
                 self._interp_target = actual
             time.sleep(0.01)
             self._mcx.set_drive_mode([8] * 6, blocking=True)
+            self._current_drive_mode = 8
         except Exception:
             pass
 
