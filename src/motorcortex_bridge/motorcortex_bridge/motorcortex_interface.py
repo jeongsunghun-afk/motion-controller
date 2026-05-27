@@ -57,10 +57,10 @@ JUMP_EVENT_PATH          = 'root/UserParameters/jump'
 HOME_EVENT_PATH          = 'root/UserParameters/home'
 HOME_ADDITIVE_EVENT_PATH = 'root/UserParameters/homeAdditive'
 MOVE_L_EVENT_PATH        = 'root/UserParameters/moveL'
-FORCE_S_EVENT_PATH       = 'root/UserParameters/forcePI'   # (이전 forceS, CSP Cartesian Impedance)
-FORCE_T_EVENT_PATH       = 'root/UserParameters/forcePF'   # (이전 forceT, CSP τ_ff)
-FORCE_F_EVENT_PATH       = 'root/UserParameters/forcePC'   # (이전 forceF, CSP GRF FF+FB)
-FORCE_J_EVENT_PATH       = 'root/UserParameters/forceTJ'  # (이전 forceJ, CST Joint Impedance)
+FORCE_PI_EVENT_PATH       = 'root/UserParameters/forcePI'   # CSP Cartesian Impedance
+FORCE_PF_EVENT_PATH       = 'root/UserParameters/forcePF'   # CSP τ_ff (외부 channel)
+FORCE_PC_EVENT_PATH       = 'root/UserParameters/forcePC'   # CSP GRF FF+FB
+FORCE_TJ_EVENT_PATH       = 'root/UserParameters/forceTJ'  # CST Joint Impedance
 FORCE_TF_EVENT_PATH      = 'root/UserParameters/forceTF'
 FORCE_TC_EVENT_PATH      = 'root/UserParameters/forceTC'
 
@@ -402,38 +402,38 @@ class MotorcortexInterface:
     def reset_movel_event(self):
         self._reset_event(MOVE_L_EVENT_PATH)
 
-    def subscribe_force_s_event(self, cb: callable):
+    def subscribe_force_pi_event(self, cb: callable):
         """forceS 토글 — 0→1 에지에서만 cb 발화.
 
         pulse subscribe 시 GRID 버튼이 latched(1 유지)면 reset 0 직후 GRID가
         다시 1로 끌어올려 콜백이 반복 발화 → 토글이 무한히 ON/OFF 되는 문제 회피.
         forceT 와 동일한 level+에지 패턴 사용.
         """
-        self._subscribe_level_event(FORCE_S_EVENT_PATH, 'forces_group', cb, None)
+        self._subscribe_level_event(FORCE_PI_EVENT_PATH, 'forces_group', cb, None)
 
-    def reset_force_s_event(self):
-        self._reset_event(FORCE_S_EVENT_PATH)
+    def reset_force_pi_event(self):
+        self._reset_event(FORCE_PI_EVENT_PATH)
 
-    def subscribe_force_t_event(self, on_start: callable, on_stop: callable = None):
+    def subscribe_force_pf_event(self, on_start: callable, on_stop: callable = None):
         """forceT 레벨 구독: value=1 → on_start, value=0 → on_stop."""
-        self._subscribe_level_event(FORCE_T_EVENT_PATH, 'forcet_group', on_start, on_stop)
+        self._subscribe_level_event(FORCE_PF_EVENT_PATH, 'forcet_group', on_start, on_stop)
 
-    def reset_force_t_event(self):
-        self._reset_event(FORCE_T_EVENT_PATH)
+    def reset_force_pf_event(self):
+        self._reset_event(FORCE_PF_EVENT_PATH)
 
-    def subscribe_force_f_event(self, on_start: callable, on_stop: callable = None):
+    def subscribe_force_pc_event(self, on_start: callable, on_stop: callable = None):
         """forceF 레벨 구독: value=1 → on_start (GRF 피드백 ON), value=0 → on_stop."""
-        self._subscribe_level_event(FORCE_F_EVENT_PATH, 'forcef_group', on_start, on_stop)
+        self._subscribe_level_event(FORCE_PC_EVENT_PATH, 'forcef_group', on_start, on_stop)
 
-    def reset_force_f_event(self):
-        self._reset_event(FORCE_F_EVENT_PATH)
+    def reset_force_pc_event(self):
+        self._reset_event(FORCE_PC_EVENT_PATH)
 
-    def subscribe_force_j_event(self, on_start: callable, on_stop: callable = None):
+    def subscribe_force_tj_event(self, on_start: callable, on_stop: callable = None):
         """forceJ 레벨 구독: value=1 → on_start (Joint impedance ON), value=0 → on_stop."""
-        self._subscribe_level_event(FORCE_J_EVENT_PATH, 'forcej_group', on_start, on_stop)
+        self._subscribe_level_event(FORCE_TJ_EVENT_PATH, 'forcej_group', on_start, on_stop)
 
-    def reset_force_j_event(self):
-        self._reset_event(FORCE_J_EVENT_PATH)
+    def reset_force_tj_event(self):
+        self._reset_event(FORCE_TJ_EVENT_PATH)
 
     def subscribe_force_tf_event(self, on_start: callable, on_stop: callable = None):
         """forceTF (CST τ_ff toggle) — level+에지."""
