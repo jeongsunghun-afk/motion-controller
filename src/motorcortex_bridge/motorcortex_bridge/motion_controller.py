@@ -115,6 +115,13 @@ KD_JOINT = np.array([  1.0,   2.0,   2.0,   1.0])   # Joint 댐핑 [N·m·s/rad]
 
 MU_DAMP = 1e-3                               # Jacobian 댐핑 계수 (특이점 방지)
 
+# ── SW joint position safety limit (MCX joint offset 기준, rad) ───────────────
+# CST 모드에서 torque 단독 명령 시 PVA limiter 가 무력화되어 runaway 위험.
+# 한계 위반 detect 시 forceTJ/TF/TC 강제 OFF + STANDBY 로 즉시 safety stop.
+# GRID PVA position limit (±269.999°) 보다 안쪽으로 보수적 설정. 필요 시 조정.
+Q_LIMIT_LO_MCX = [math.radians(-180.0)] * N_AXES   # [rad] MCX offset
+Q_LIMIT_HI_MCX = [math.radians(+180.0)] * N_AXES   # [rad] MCX offset
+
 # ── Gait2 페이즈별 게인 ──────────────────────────────────────────────────────
 GAIT_KP_LOW  = np.array([200.0, 200.0, 200.0])  # Late Swing / Touch-down / Pre-Swing [N/m]
 GAIT_KD_MID  = np.array([ 20.0,  20.0,  20.0])  # Late Swing [N·s/m]
@@ -558,6 +565,10 @@ class MotionController:
 
         self._waypoints: list = []   # start()에서 로드; 접근 전 초기화 보장
 
+        # ── SW joint safety limit ────────────────────────────────────────
+        self._safety_log_cb = None         # start() 에서 등록 — 한계 위반 로그용
+        self._limit_violation_ts = 0.0     # 디바운스 (중복 로그 차단, 1s)
+
         # EXEC_TRAJ 큐
         self._traj_queue     = deque()
         self._cart_queue     = deque()
@@ -647,6 +658,9 @@ class MotionController:
         연결 완료 후 1회 호출.
         반환: waypoint 수
         """
+        # safety stop 로그 콜백 등록 (control_loop / event_loop 모두 사용)
+        self._safety_log_cb = log_cb
+
         waypoints = load_trajectory(self.traj_file)
         self._waypoints = waypoints
         time.sleep(0.01)
@@ -863,6 +877,53 @@ class MotionController:
     def _disable_impedance_if_active(self):
         self._disable_mode_a()
         self._disable_mode_b()
+
+    # ── SW joint position safety limit ───────────────────────────────────────
+    def _check_joint_safety_limit(self, q_a_arr) -> int:
+        """현재 actual joint position 한계 검사. 위반 축 index 반환, 정상이면 -1.
+
+        q_a_arr : (N_AXES,) ndarray or list — MCX joint offset [rad]
+        """
+        for i in range(N_AXES):
+            if q_a_arr[i] < Q_LIMIT_LO_MCX[i] or q_a_arr[i] > Q_LIMIT_HI_MCX[i]:
+                return i
+        return -1
+
+    def _handle_limit_violation(self, q_a_arr, axis_idx: int):
+        """한계 위반 시 즉시 safety stop:
+        - Mode A (forceTJ/TF/TC) 강제 해제
+        - axesTorquesInput 0 으로 클리어 (잔여 토크 차단)
+        - q_cmd = q_actual 로 freeze (snap-back 방지)
+        - STANDBY 전환
+        - 1s 디바운스 로그
+        """
+        self._disable_mode_a()
+        # Mode B 도 해제 — CSP 측 임피던스가 한계 근처에서 동작 중이면 함께 stop
+        self._disable_mode_b()
+
+        try:
+            self._mcx.set_target_torques([0.0] * N_AXES)
+        except Exception:
+            pass
+
+        cur = list(self._mcx.actual_positions[:N_AXES])
+        with self._lock:
+            self._last_cmd_pos  = cur
+            self._interp_prev   = cur
+            self._interp_target = cur
+        self._ctrl_state = 'STANDBY'
+
+        now = time.monotonic()
+        if now - self._limit_violation_ts > 1.0 and self._safety_log_cb:
+            self._limit_violation_ts = now
+            q_deg = math.degrees(float(q_a_arr[axis_idx]))
+            lo_deg = math.degrees(Q_LIMIT_LO_MCX[axis_idx])
+            hi_deg = math.degrees(Q_LIMIT_HI_MCX[axis_idx])
+            self._safety_log_cb(
+                f'⚠️ SAFETY STOP: joint{axis_idx+1} limit violation '
+                f'(q={q_deg:+.1f}° outside [{lo_deg:+.1f}°, {hi_deg:+.1f}°]) '
+                f'— forceTJ/TF/TC + Mode B 해제, STANDBY 복귀'
+            )
 
     def _on_home(self):
         """홈 복귀(POS). FORCE_T/S_IDLE 활성 중이면 임피던스 해제 후 home 진행."""
@@ -1603,10 +1664,21 @@ class MotionController:
                                   ff_active or contact_active)
 
                     if any_active:
+                        q_a_arr = np.array(self._mcx.actual_positions[:N_AXES])
+
+                        # ── SW joint safety limit (CST runaway 차단) ────
+                        # tau 주입하는 경로는 모두 검사 (CSP/CST 공통 안전망)
+                        bad = self._check_joint_safety_limit(q_a_arr)
+                        if bad >= 0:
+                            self._handle_limit_violation(q_a_arr, bad)
+                            slack = t_next - time.monotonic()
+                            if slack > 0:
+                                time.sleep(slack)
+                            continue
+
                         q_now_phy       = _to_phy(self._mcx.actual_positions)
                         x_a, J, tau_dyn = _fun_force_f(q_now_phy)
 
-                        q_a_arr = np.array(self._mcx.actual_positions[:N_AXES])
                         dq_a    = (q_a_arr - q_a_prev_arr) / dt
                         q_a_prev_arr = q_a_arr.copy()
 
@@ -1715,6 +1787,16 @@ class MotionController:
                 else:
                     actual    = self._mcx.actual_positions
                     q_a_arr   = np.array(actual[:N_AXES])
+
+                    # ── SW joint safety limit (CST runaway 차단) ────────
+                    bad = self._check_joint_safety_limit(q_a_arr)
+                    if bad >= 0:
+                        self._handle_limit_violation(q_a_arr, bad)
+                        slack = t_next - time.monotonic()
+                        if slack > 0:
+                            time.sleep(slack)
+                        continue
+
                     q_r_arr   = np.array(self._stance_q_r_mcx)
                     q_now_phy = _to_phy(actual)
                     x_a, J, tau_dyn = _fun_force_f(q_now_phy)
