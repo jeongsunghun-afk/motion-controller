@@ -186,6 +186,17 @@
 - `kp_joint / kd_joint` 가 `double[5]` 으로 등록되어 있는지
 - `torque_reset` 이벤트 (`root/UserParameters/torque_reset`) 가 GRID 에 등록되어 있는지
 
+### home / torque_reset 운용 가이드 (수동 운용 — 자동 전환 없음)
+| 모드 | 의도 | 사용 명령 |
+|---|---|---|
+| **CSP** | 자세 복귀 [0,0,0,0,0] | `home` 직접 |
+| **CSP** | feedforward 토크 정리 (위치 유지) | `torque_reset` |
+| **CST** | 자세 복귀 [0,0,0,0,0] | **opmode=0 (CSP 전환) → home 누름** (수동) |
+| **CST** | 비상 정지 / 토크 클리어 | `torque_reset` |
+
+→ CST drive 는 위치 PID 가 없어 `home` 단독으로 자세 복귀 불가. 사용자가 CSP 로 먼저 전환.
+→ `home` 콜백은 모든 force* OFF 시키므로 CST 에서 누르면 사실상 `torque_reset` 과 동일.
+
 ### 토크 식 매핑 (v1.0.0 후)
 ```
 tau_cmd = kp · (q_d − q_a) + kd · (q̇_d − q̇_a)    ← impedance      (forcePI/forceTJ)
