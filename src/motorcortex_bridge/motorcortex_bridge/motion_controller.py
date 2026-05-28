@@ -82,8 +82,10 @@ from motorcortex_bridge.motorcortex_interface import (
     N_AXES,
 )
 
-# ── 홈 자세 (4축 leg + toe(5축) = 0°) ─────────────────────────────────────────
-Q_HOME_DEG = [0.0, -150.0, -90.0, 90.0, 0.0]
+# ── 홈 자세 — 마스터 5-elem 상수, N_AXES 만큼만 슬라이스 ──────────────────────
+# N_AXES=4 → 앞 4축 / N_AXES=5 → toe 포함. 5번째 (toe) home = 0°.
+_Q_HOME_DEG_FULL = [0.0, -150.0, -90.0, 90.0, 0.0]
+Q_HOME_DEG = _Q_HOME_DEG_FULL[:N_AXES]
 Q_HOME_RAD = [math.radians(d) for d in Q_HOME_DEG]
 
 # ── 기본값 ─────────────────────────────────────────────────────────────────────
@@ -141,8 +143,11 @@ def _hermite_vel(s: float, T: float,
 KP_IMP   = np.array([ 80.0, 246.0, 246.0])   # Cartesian 강성 [N/m]  X(중력):≈80Nm/rad, Y/Z:≈80Nm/rad@hip
 KD_IMP   = np.array([  5.0,  15.0,  15.0])   # Cartesian 감쇠 [N·s/m] X(중력):≈5Nms/rad, Y/Z:≈5Nms/rad@hip
 KF_GRF   = np.array([  0.1,   0.1,   0.1])   # forceT GRF 피드백 게인 (무차원, force error → N)
-KP_JOINT = np.array([ 10.0,  30.0,  30.0,  10.0,  5.0])   # Joint 강성 [N·m/rad]    (forceTJ, 5축=toe 보수적)
-KD_JOINT = np.array([  1.0,   2.0,   2.0,   1.0,  0.5])   # Joint 댐핑 [N·m·s/rad]  (forceTJ, 5축=toe 보수적)
+# 마스터 5-elem, N_AXES 만큼만 슬라이스 (forceTJ Joint impedance)
+_KP_JOINT_FULL = np.array([ 10.0,  30.0,  30.0,  10.0,  5.0])   # [N·m/rad]    (5축=toe 보수적)
+_KD_JOINT_FULL = np.array([  1.0,   2.0,   2.0,   1.0,  0.5])   # [N·m·s/rad]
+KP_JOINT = _KP_JOINT_FULL[:N_AXES].copy()
+KD_JOINT = _KD_JOINT_FULL[:N_AXES].copy()
 
 MU_DAMP = 1e-3                               # Jacobian 댐핑 계수 (특이점 방지)
 
@@ -221,57 +226,57 @@ def forward_kinematics(thetas: list) -> list:
 
 def compute_jacobian(thetas: list) -> np.ndarray:
     """
-    3D 위치 자코비안 (3×N_AXES).
-    J[:,i] = z_i × (p_e - p_i)
-    반환: (3, N_AXES) ndarray
+    3D 위치 자코비안 (3 × len(thetas)). _DH 정의된 4축까지만 nonzero column.
+    J[:,i] = z_i × (p_e - p_i)   for i < len(_DH)
     """
     origins, z_axes = _get_origins_zaxes(thetas)
-    pe = origins[-1]
-    J  = np.zeros((3, len(thetas)))
-    for i in range(len(thetas)):
+    pe   = origins[-1]
+    n    = len(thetas)
+    n_dh = min(n, len(_DH))
+    J    = np.zeros((3, n))
+    for i in range(n_dh):
         J[:, i] = np.cross(z_axes[i], pe - origins[i])
     return J
 
 
 def compute_gravity_torque(thetas: list) -> np.ndarray:
     """
-    링크 무게에 의한 중력 보상 토크 (N_AXES×1) [N·m].
-    τ_g[j] = Σ_{k≥j} (z_j × (p_com_k − p_j)) · (m_k · G_VEC)
-
-    p_com_k : 링크 k의 무게중심 = 관절 k와 k+1 원점의 중간점
-    _get_origins_zaxes 재사용으로 DH 행렬 중복 계산 없음.
+    링크 무게에 의한 중력 보상 토크 (len(thetas),) [N·m].
+    _DH 길이만큼만 링크 누적, 나머지 자리는 0 (예: toe).
     """
     origins, z_axes = _get_origins_zaxes(thetas)
     n      = len(thetas)
+    n_dh   = min(n, len(_DH))
     tau_g  = np.zeros(n)
-    for k in range(n):                        # 링크 k (관절 k → k+1 사이)
+    for k in range(n_dh):                     # 링크 k (관절 k → k+1 사이)
         p_com  = (origins[k] + origins[k + 1]) / 2.0
-        f_grav = LINK_MASS[k] * G_VEC        # 중력 하중 [N]
-        for j in range(k + 1):               # 관절 j (j ≤ k 인 관절이 링크 k에 영향)
+        f_grav = LINK_MASS[k] * G_VEC
+        for j in range(k + 1):
             tau_g[j] += np.dot(np.cross(z_axes[j], p_com - origins[j]), f_grav)
     return tau_g
 
 
 def _fun_force_f(thetas: list):
     """
-    동역학 계산 (단일 DH 패스): FK / Jacobian / 중력 토크.
-    forceS / forceT 200Hz 루프에서 DH 행렬 중복 계산 방지용.
+    동역학 단일 DH 패스: FK / Jacobian / 중력 토크.
+    출력 차원 = len(thetas). _DH 정의된 4축까지만 nonzero 항 (나머지는 0).
 
     반환: (x_foot, J, tau_dyn)
-      x_foot  : 발끝 위치 [m]        (3,) ndarray
-      J       : 위치 자코비안 (3, N_AXES)
-      tau_dyn : 중력 보상 토크 [Nm]  (N_AXES,)
+      x_foot  : 발끝 위치 [m]                  (3,)
+      J       : 위치 자코비안                  (3, len(thetas))
+      tau_dyn : 중력 보상 토크 [Nm]            (len(thetas),)
     """
     origins, z_axes = _get_origins_zaxes(thetas)
-    pe = origins[-1]
-    n  = len(thetas)
+    pe   = origins[-1]
+    n    = len(thetas)
+    n_dh = min(n, len(_DH))
 
     J = np.zeros((3, n))
-    for i in range(n):
+    for i in range(n_dh):
         J[:, i] = np.cross(z_axes[i], pe - origins[i])
 
     tau_g = np.zeros(n)
-    for k in range(n):
+    for k in range(n_dh):
         p_com  = (origins[k] + origins[k + 1]) / 2.0
         f_grav = LINK_MASS[k] * G_VEC
         for j in range(k + 1):
@@ -309,15 +314,13 @@ def compute_contact_torque(thetas: list, F_ref) -> np.ndarray:
 def compute_inertia_matrix(thetas: list) -> np.ndarray:
     """Joint-space inertia matrix M(q) — point-mass approximation.
 
-    각 link COM 을 link 중점 점질량으로 근사 (inertia tensor 무시).
-    M(q) = Σ_i m_i · J_v_i^T · J_v_i  where J_v_i = ∂p_com_i / ∂q
-
-    반환: (N_AXES, N_AXES) [kg·m²]
+    _DH 정의된 4축 링크만 누적, 출력은 (len(thetas), len(thetas)). 나머지 자리는 0.
     """
     origins, z_axes = _get_origins_zaxes(thetas)
-    n = len(thetas)
+    n    = len(thetas)
+    n_dh = min(n, len(_DH))
     M = np.zeros((n, n))
-    for i in range(n):
+    for i in range(n_dh):
         p_com_i = (origins[i] + origins[i + 1]) / 2.0
         J_v_i = np.zeros((3, n))
         for j in range(i + 1):

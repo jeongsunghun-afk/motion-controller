@@ -88,7 +88,7 @@ NMPC_TROT_EVENT_PATH     = 'root/UserParameters/NMPC_trot'
 #   ch3 = HL_joint5_ankle_p
 #   ch4 = HL_joint6_toe_p    (read-only)
 
-N_AXES = 5   # 제어축 수 (toe 제외)
+N_AXES = 4   # 제어축 수 (toe 제외)
 NUM_CH = 6   # hostInJointPosition2 전체 채널 수
 
 JOINT_LOOP_MAP = [
