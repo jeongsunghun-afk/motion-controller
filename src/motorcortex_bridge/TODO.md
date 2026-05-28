@@ -132,6 +132,10 @@
 
 ## ✅ 완료 (Done)
 
+### v0.9.2 (2026-05-28)
+- Joint impedance default 상향: `KP_JOINT = [50, 100, 100, 50, 20]`, `KD_JOINT = [3, 5, 3, 1, 0.5]`
+- compliant (10~30) → medium-low (50~100) 진입, critical damping × 0.75 매칭
+
 ### v0.9.1 (2026-05-28, `bc13bc7`)
 - CST 진입 시 forceTJ 자동 활성화 제거 — 사용자 수동 운용 (강성 테스트 위해)
 
