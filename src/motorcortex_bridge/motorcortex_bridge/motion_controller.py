@@ -146,8 +146,8 @@ KF_GRF   = np.array([  0.1,   0.1,   0.1])   # forceT GRF 피드백 게인 (무�
 # 마스터 5-elem, N_AXES 만큼만 슬라이스 (forceTJ Joint impedance)
 # 운용 권장: compliant 50~100 / medium 100~300 / stiff 300~1000 N·m/rad
 # critical damping: kd ≈ 2·√(kp·I_eff), under-damped 0.7~1.0 배 권장
-_KP_JOINT_FULL = np.array([ 50.0, 100.0, 100.0,  50.0, 20.0])   # [N·m/rad]    (medium-low, v0.9.2)
-_KD_JOINT_FULL = np.array([  3.0,   5.0,   3.0,   1.0,  0.5])   # [N·m·s/rad]  (critical ×0.75)
+_KP_JOINT_FULL = np.array([ 25.0,  50.0,  50.0,  25.0, 10.0])   # [N·m/rad]    (v0.9.3, v0.9.2 의 1/2)
+_KD_JOINT_FULL = np.array([  1.5,   2.5,   1.5,   0.5, 0.25])   # [N·m·s/rad]  (v0.9.2 의 1/2)
 KP_JOINT = _KP_JOINT_FULL[:N_AXES].copy()
 KD_JOINT = _KD_JOINT_FULL[:N_AXES].copy()
 

@@ -132,7 +132,11 @@
 
 ## ✅ 완료 (Done)
 
-### v0.9.2 (2026-05-28)
+### v0.9.3 (2026-05-28)
+- Joint impedance default 절반으로 하향: `KP_JOINT = [25, 50, 50, 25, 10]`, `KD_JOINT = [1.5, 2.5, 1.5, 0.5, 0.25]`
+- 사유: v0.9.2 의 medium-low 영역이 운용에서 너무 강함 → very-compliant ~ compliant 경계로 조정
+
+### v0.9.2 (2026-05-28, `4be746d`)
 - Joint impedance default 상향: `KP_JOINT = [50, 100, 100, 50, 20]`, `KD_JOINT = [3, 5, 3, 1, 0.5]`
 - compliant (10~30) → medium-low (50~100) 진입, critical damping × 0.75 매칭
 
