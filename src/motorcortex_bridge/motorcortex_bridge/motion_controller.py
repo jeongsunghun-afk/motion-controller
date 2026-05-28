@@ -566,8 +566,7 @@ class MotionController:
         self._force_pc_active = False        # GRF 피드백 포함 여부: True=tau_dyn+tau_grf / False=tau_dyn only
         self.force_t_ref       = np.zeros(3)  # forceT 목표 GRF [N] (힙 원점 기준, 초기=0 → GRF 상쇄)
         self.contact_force_ref = np.zeros(3)  # Phase 3 contact FF τ = J^T·F_ref [N] (open-loop)
-        self._force_pi_active   = False        # forceS 임피던스 토글
-        self._force_pi_last_ts  = 0.0          # forceS 디바운스 (콜백 재발화 차단, 200ms)
+        self._force_pi_active   = False        # forcePI CSP Cartesian impedance (mirror)
 
         # 궤적 실행 중 힘 제어 게인 — 외부/콜백에서 직접 설정 (0 = 비활성)
         self.kp_imp = np.zeros(3)   # Cartesian 강성 게인 [N/m]   (live, 0 = 비활성)
@@ -736,7 +735,7 @@ class MotionController:
         self._mcx.subscribe_home_event(self._on_home)
         self._mcx.subscribe_home_additive_event(self._on_home_additive)
         self._mcx.subscribe_movel_event(self._on_movel)
-        self._mcx.subscribe_force_pi_event(self._on_force_pi)
+        self._mcx.subscribe_force_pi_event(self._on_force_pi_start, self._on_force_pi_stop)
         self._mcx.subscribe_force_pf_event(self._on_force_pf_start, self._on_force_pf_stop)
         self._mcx.subscribe_force_pc_event(self._on_force_pc_start, self._on_force_pc_stop)
         self._mcx.subscribe_force_tj_event(self._on_force_tj_start, self._on_force_tj_stop)
@@ -1060,29 +1059,24 @@ class MotionController:
         if self._ctrl_state not in ('EXEC_TRAJ', 'HOME'):
             self._movel_ev.set()
 
-    def _on_force_pi(self):
-        """forceS 버튼: moveL 임피던스 모드 ON/OFF 토글 (level+0→1 에지 + 200ms 디바운스).
+    def _on_force_pi_start(self):
+        """forcePI=1 수신 — CSP Cartesian impedance ON.
 
-        구독이 level+에지로 바뀌어 GRID value=1 유지 중에도 재발화 없음.
-        디바운스 200ms는 사용자 중복 클릭/스파이크 방어용 백스톱.
-        reset_force_pi_event()는 호출 안 함 — 호출하면 latched 버튼에서
-        0→1 에지가 재생성되어 토글이 다시 반복됨.
+        v0.9.0 부터 다른 force* 와 동일한 mirror 패턴.
+        CST 모드면 활성 거부 (CSP 전용).
         """
-        now = time.monotonic()
-        if now - self._force_pi_last_ts < 0.2:
+        if self._is_cst_mode():
             return
-        self._force_pi_last_ts = now
-        # CST 모드에서 forceS 활성 시도 차단
-        if self._is_cst_mode() and not self._force_pi_active:
-            return
-        self._force_pi_active = not self._force_pi_active
-        if self._force_pi_active:
-            self._disable_mode_a()
-            self.kp_imp = self._kp_imp_grid.copy()
-            self.kd_imp = self._kd_imp_grid.copy()
-        else:
-            self.kp_imp = np.zeros(3)
-            self.kd_imp = np.zeros(3)
+        self._disable_mode_a()
+        self._force_pi_active = True
+        self.kp_imp = self._kp_imp_grid.copy()
+        self.kd_imp = self._kd_imp_grid.copy()
+
+    def _on_force_pi_stop(self):
+        """forcePI=0 수신 — Cartesian impedance OFF."""
+        self._force_pi_active = False
+        self.kp_imp = np.zeros(3)
+        self.kd_imp = np.zeros(3)
 
     def _on_force_pf_start(self):
         """forceT=1 수신 — GRF 제어 시작 (동작 중에도 즉시 활성).
@@ -1181,8 +1175,14 @@ class MotionController:
         self.kf_grf = np.zeros(3)
 
     def _on_cst_mode(self):
-        # CSP→CST 전환 — CST 와 호환 안 되는 Mode B (forceS/T/F) 만 해제, forceJ 는 유지
-        # 위치 동기화 후 모드 전환
+        """CSP→CST 전환.
+
+        - Mode B (forcePI/PF/PC) 자동 해제
+        - 위치 동기화 (q_cmd = actual) 후 driveMode = 10 (CST)
+        - **forceTJ 자동 활성화** — CST 모드는 axesTorquesInput 만 따르므로
+          forceTJ 없으면 토크 0 free spin 위험. impedance PD 가 안전망.
+        - GRID UI 의 forceTJ 토글도 1 로 sync (set_force_tj_event)
+        """
         self._disable_mode_b()
         try:
             actual = list(self._mcx.actual_positions[:N_AXES])
@@ -1194,6 +1194,15 @@ class MotionController:
             time.sleep(0.01)
             self._mcx.set_drive_mode([10] * 6, blocking=True)
             self._current_drive_mode = 10
+
+            # CST 진입 안전망: forceTJ 자동 활성화
+            self._force_tj_active = True
+            self.kp_joint = self._kp_joint_grid.copy()
+            self.kd_joint = self._kd_joint_grid.copy()
+            try:
+                self._mcx.set_force_tj_event(1)   # GRID UI sync
+            except Exception:
+                pass
         except Exception:
             pass
 

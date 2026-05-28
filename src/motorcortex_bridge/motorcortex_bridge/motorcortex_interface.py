@@ -88,7 +88,7 @@ NMPC_TROT_EVENT_PATH     = 'root/UserParameters/NMPC_trot'
 #   ch3 = HL_joint5_ankle_p
 #   ch4 = HL_joint6_toe_p    (read-only)
 
-N_AXES = 4   # 제어축 수 (toe 제외)
+N_AXES = 4   # 제어축 수
 NUM_CH = 6   # hostInJointPosition2 전체 채널 수
 
 JOINT_LOOP_MAP = [
@@ -428,14 +428,12 @@ class MotorcortexInterface:
     def reset_movel_event(self):
         self._reset_event(MOVE_L_EVENT_PATH)
 
-    def subscribe_force_pi_event(self, cb: callable):
-        """forceS 토글 — 0→1 에지에서만 cb 발화.
+    def subscribe_force_pi_event(self, on_start: callable, on_stop: callable = None):
+        """forcePI 레벨 구독: value=1 → on_start (Cartesian impedance ON), value=0 → on_stop.
 
-        pulse subscribe 시 GRID 버튼이 latched(1 유지)면 reset 0 직후 GRID가
-        다시 1로 끌어올려 콜백이 반복 발화 → 토글이 무한히 ON/OFF 되는 문제 회피.
-        forceT 와 동일한 level+에지 패턴 사용.
+        v0.9.0 부터 다른 force* 와 동일한 mirror 패턴 (start/stop 짝).
         """
-        self._subscribe_level_event(FORCE_PI_EVENT_PATH, 'forces_group', cb, None)
+        self._subscribe_level_event(FORCE_PI_EVENT_PATH, 'forcepi_group', on_start, on_stop)
 
     def reset_force_pi_event(self):
         self._reset_event(FORCE_PI_EVENT_PATH)
@@ -460,6 +458,12 @@ class MotorcortexInterface:
 
     def reset_force_tj_event(self):
         self._reset_event(FORCE_TJ_EVENT_PATH)
+
+    def set_force_tj_event(self, value: int = 1, blocking: bool = False):
+        """forceTJ value 직접 설정 (CST 진입 시 자동 활성화 / GRID UI 동기화용)."""
+        future = self._req.setParameter(FORCE_TJ_EVENT_PATH, [int(value)])
+        if blocking:
+            future.get()
 
     def subscribe_force_tf_event(self, on_start: callable, on_stop: callable = None):
         """forceTF (CST τ_ff toggle) — level+에지."""
