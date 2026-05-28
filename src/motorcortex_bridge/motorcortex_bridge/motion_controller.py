@@ -1179,9 +1179,9 @@ class MotionController:
 
         - Mode B (forcePI/PF/PC) 자동 해제
         - 위치 동기화 (q_cmd = actual) 후 driveMode = 10 (CST)
-        - **forceTJ 자동 활성화** — CST 모드는 axesTorquesInput 만 따르므로
-          forceTJ 없으면 토크 0 free spin 위험. impedance PD 가 안전망.
-        - GRID UI 의 forceTJ 토글도 1 로 sync (set_force_tj_event)
+        - 자동 활성화 정책 없음 — 사용자가 GRID 에서 직접 forceTJ/TF/TC 켜야 함
+          (forceTJ 단독으로 강성 테스트 등 의도적 운용 가능)
+        - 주의: 모든 force* OFF 인 채 CST 운용 시 axesTorquesInput=0 → free spin 위험
         """
         self._disable_mode_b()
         try:
@@ -1194,15 +1194,6 @@ class MotionController:
             time.sleep(0.01)
             self._mcx.set_drive_mode([10] * 6, blocking=True)
             self._current_drive_mode = 10
-
-            # CST 진입 안전망: forceTJ 자동 활성화
-            self._force_tj_active = True
-            self.kp_joint = self._kp_joint_grid.copy()
-            self.kd_joint = self._kd_joint_grid.copy()
-            try:
-                self._mcx.set_force_tj_event(1)   # GRID UI sync
-            except Exception:
-                pass
         except Exception:
             pass
 
