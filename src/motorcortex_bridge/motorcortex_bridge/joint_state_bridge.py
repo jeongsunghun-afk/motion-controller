@@ -144,15 +144,19 @@ class JointStateBridge(Node):
 
     # ── /low_cmd 구독 콜백 ────────────────────────────────────────────────────
     def _on_low_cmd(self, msg: JointState):
-        if len(msg.position) < N_AXES:
-            self.get_logger().warn(
-                f'/low_cmd: position 길이 부족 ({len(msg.position)} < {N_AXES})'
-            )
-            return
+        """RL/외부 컨트롤러 명령 수신.
 
-        q   = list(msg.position[:N_AXES])
+        v1.0.0: position 또는 effort 둘 중 하나만 있어도 처리.
+          CSP+RL 시: position(qt) + effort(tau_offset) 둘 다 수신
+          CST+RL 시: effort(tau_cmd) 만 수신 — position 빈 배열 가능
+        """
+        q   = list(msg.position[:N_AXES]) if len(msg.position) >= N_AXES else None
         dq  = list(msg.velocity[:N_AXES]) if len(msg.velocity) >= N_AXES else None
         tau = list(msg.effort[:N_AXES])   if len(msg.effort)   >= N_AXES else None
+
+        # 위치도 토크도 없으면 무시 (의미 없는 메시지)
+        if q is None and tau is None:
+            return
 
         with self._lock:
             kp = list(self._rl_kp)

@@ -1,6 +1,6 @@
 # motorcortex_bridge TODO
 
-> 마지막 업데이트: **v0.9.1** (commit `bc13bc7`, 2026-05-28)
+> 마지막 업데이트: **v1.0.0** (2026-05-28)
 > 정책: 모든 commit 에서 본 문서를 함께 갱신 (작업 추가/완료/우선순위 변경 시).
 
 ---
@@ -15,52 +15,19 @@
 
 ---
 
-## 📋 단기 (v1.0.0 — 토크 식 모듈화 재설계)
+## 📋 단기 (운용 가이드 정착 / 다음 단계 준비)
 
-> 디버깅 완료 후 진행. MPC_trot 구현 전 단계로 적합.
+> v1.0.0 완료. MPC_trot 구현 전 운용 검증 단계.
 
-- [ ] **forcePF / forceTF 의미 복원** — "Dynamic Feedforward" 모듈
-  - 현재: `_cmd_tau` 외부 채널 (RL τ_ff)
-  - 변경 후: `tau_dyn` (중력 보상) 가산 모듈
-  - `tau_dyn always-on` 제거 → `force_pf_active or force_tf_active` 시에만 가산
-- [ ] **forceRL 토글 신설** — 외부 raw 토크 패스스루
-  - `FORCE_RL_EVENT_PATH = 'root/UserParameters/forceRL'`
-  - `subscribe_force_rl_event(on_start, on_stop)` + `reset_force_rl_event()`
-  - `_force_rl_active` flag + `_on_force_rl_start / stop` 콜백
-  - CSP+RL: `_cmd_tau` = tau_offset (qt 추종 + tau feedforward)
-  - CST+RL: `_cmd_tau` = tau_cmd (raw passthrough)
-- [ ] **토크 합성식 재구성** (CSP_IDLE / CST_IDLE / EXEC_TRAJ 공통 패턴)
-  ```python
-  tau_arr = np.zeros(N_AXES)
-  if force_pi/tj_active:  tau_arr += impedance         # kp·Δq − kd·q̇
-  if force_pf/tf_active:  tau_arr += tau_dyn           # 중력 보상 (+ Phase 2 M·q̈_d)
-  if force_pc/tc_active:  tau_arr += J^T·(F_ref+kf·err)  # GRF
-  if force_rl_active:     tau_arr += _cmd_tau           # raw RL
-  ```
-- [ ] **자동 활성화 정책 없음** (v0.9.1 정합 유지) — 사용자 수동 운용
-- [ ] **docstring / 운용 가이드 갱신**
-
----
-
-## 🔌 단기 (RL 연결 작업)
-
-> v1.0.0 재설계 완료 후 진행.
-
-- [ ] **CSP+RL 시나리오** 운용 구성:
-  - opmode=0 (CSP), state=RL_POLICY (Standing → RL_trot)
-  - forceRL ON + (선택) forcePF ON
-  - `/low_cmd`: `position=qt`, `effort=tau_offset`
-- [ ] **CST+RL 시나리오** 운용 구성:
-  - opmode=1 (CST), state=CST_IDLE
-  - forceRL ON, 나머지 모두 OFF (raw passthrough)
-  - `/low_cmd`: `effort=tau_cmd` (position 빈 배열 OK)
-- [ ] **`joint_state_bridge._on_low_cmd` 수정**:
-  - `position` 길이 부족해도 reject 안 함 (CST+RL 시나리오)
-  - `q=None / tau=None` 분기 추가
-- [ ] **`set_command` 시그니처** — `q=None` 분기 (`_cmd_tau` 만 갱신)
-- [ ] **CST+RL 모드 진입 자동화** (선택) — `RL_cst` 이벤트
-- [ ] **RL 정책 disconnect timeout** — `_cmd_tau` 자동 0 (예: 100ms 무수신 시)
-- [ ] **`torque_reset` 가 `_cmd_tau` 도 클리어** 하도록 추가
+- [ ] **v1.0.0 운용 검증**:
+  - forcePF/TF 가 "Dynamic feedforward (tau_dyn 가산)" 으로 작동 확인
+  - `/low_cmd` 수신 시 자동 RL_POLICY 진입 확인 (CSP+RL / CST+RL)
+  - RL_POLICY timeout (200ms) 시 STANDBY 복귀 확인
+  - `torque_reset` 이 `_cmd_tau` 도 클리어 확인
+- [ ] **RL 정책 측 메시지 패킷 표준화**:
+  - CSP+RL: `JointState(position=qt, effort=tau_offset)`
+  - CST+RL: `JointState(position=[], effort=tau_cmd)` (또는 dummy position)
+- [ ] **CST+RL 모드 진입 가이드 작성** — opmode=1 + `/low_cmd` publish 시작
 
 ---
 
@@ -132,7 +99,27 @@
 
 ## ✅ 완료 (Done)
 
-### v0.9.3 (2026-05-28)
+### v1.0.0 (2026-05-28)
+- **토크 식 모듈화 재설계** — 6개 force* 토글 의미 정합:
+  - **forcePF / forceTF**: Dynamic feedforward (`tau_dyn` 가산) — 이전 외부 `_cmd_tau` 채널 의미 제거
+  - **forcePI / forceTJ**: Impedance (Cartesian / Joint) — 기존 의미 유지
+  - **forcePC / forceTC**: GRF FF+FB — 기존 의미 유지
+- **`tau_dyn` always-on 제거** → forcePF/TF active 시에만 가산 (kinesthetic teaching 자연 지원)
+- **RL_POLICY auto-entry** — `/low_cmd` 수신 자체가 진입 시그널 (별도 forceRL 토글 없음)
+  - 진입 시 다른 force* 자동 비활성 (GRID sync)
+  - mode-aware 토크 처리:
+    - CSP+RL: Hermite 위치 + `cmd_tau` (tau_offset feedforward)
+    - CST+RL: `set_target_torques(cmd_tau)` only (raw passthrough)
+  - `RL_CMD_TIMEOUT = 200ms` → publisher dropout 시 자동 STANDBY 복귀
+- **`_cmd_tau` 의미 정합** — motorcortex `axesTorquesInput == target torque offset`:
+  - CSP+RL: drive 위치 PID 위의 feedforward (tau_offset)
+  - CST+RL: drive base ≈ 0 → 사실상 absolute torque
+- **`set_command` 시그니처** — `q=None` 분기 (CST+RL 의 effort 만 수신 시나리오)
+- **`_on_low_cmd` 가드 완화** — position 부족해도 effort 만 처리 가능
+- **`torque_reset` 보강** — `_cmd_tau` 도 함께 클리어 (RL 잔여 명령 차단)
+- **docstring 전면 갱신** — control_loop 도패 + 토글 의미
+
+### v0.9.3 (2026-05-28, `cb90a58`)
 - Joint impedance default 절반으로 하향: `KP_JOINT = [25, 50, 50, 25, 10]`, `KD_JOINT = [1.5, 2.5, 1.5, 0.5, 0.25]`
 - 사유: v0.9.2 의 medium-low 영역이 운용에서 너무 강함 → very-compliant ~ compliant 경계로 조정
 

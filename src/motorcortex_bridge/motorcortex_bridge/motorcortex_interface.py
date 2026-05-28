@@ -63,8 +63,10 @@ FORCE_PI_EVENT_PATH       = 'root/UserParameters/forcePI'   # CSP Cartesian Impe
 FORCE_PF_EVENT_PATH       = 'root/UserParameters/forcePF'   # CSP τ_ff (외부 channel)
 FORCE_PC_EVENT_PATH       = 'root/UserParameters/forcePC'   # CSP GRF FF+FB
 FORCE_TJ_EVENT_PATH       = 'root/UserParameters/forceTJ'  # CST Joint Impedance
-FORCE_TF_EVENT_PATH      = 'root/UserParameters/forceTF' # CST τ_ff toggle
+FORCE_TF_EVENT_PATH      = 'root/UserParameters/forceTF' # CST Dynamic feedforward (tau_dyn 가산)
 FORCE_TC_EVENT_PATH      = 'root/UserParameters/forceTC' # CST GRF FF+FB toggle
+# 참고: forcePF/TF 의 의미는 v1.0.0 부터 "Dynamic feedforward (tau_dyn 가산)" 모듈.
+# RL 운용은 별도 토글 없이 ROS /low_cmd 수신 자체가 RL_POLICY 진입 시그널 (auto-entry).
 
 RESET_GAIN_EVENT_PATH    = 'root/UserParameters/reset'
 TORQUE_RESET_EVENT_PATH  = 'root/UserParameters/torque_reset'   # EMG 복귀: 모든 force 토글 OFF + tau=0 + STANDBY

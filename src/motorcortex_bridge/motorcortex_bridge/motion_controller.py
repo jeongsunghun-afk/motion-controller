@@ -36,13 +36,20 @@ ROS2 의존성 없음 — joint_state_bridge 에서 생성하여 사용
 
   [CSP — Cyclic Sync Position]  (※ 어느 토글이라도 ON → CSP_IDLE 진입 + 합성 토크)
   forcePI       — Cartesian impedance       (J^T·(kp_imp·Δx − kd_imp·ẋ))
-  forcePF       — τ_ff toggle               (low_cmd.effort → 토크 가산)
+  forcePF       — Dynamic feedforward       (tau_dyn 중력보상 가산)            [v1.0.0]
   forcePC       — GRF FF+FB toggle          (J^T·(F_ref + kf_grf·(F_ref − F̂_GRF)))
 
   [CST — Cyclic Sync Torque]  (※ 어느 토글이라도 ON → CST_IDLE 진입 + 합성 토크, q_cmd=q_actual)
   forceTJ       — Joint impedance           (kp_joint·Δq − kd_joint·q̇)
-  forceTF       — τ_ff toggle               (low_cmd.effort → 토크 가산)
+  forceTF       — Dynamic feedforward       (tau_dyn 중력보상 가산)            [v1.0.0]
   forceTC       — GRF FF+FB toggle          (J^T·(F_ref + kf_grf·(F_ref − F̂_GRF)))
+
+  [RL 운용 — 외부 토크 명령]  (별도 force* 토글 없음, /low_cmd 수신 자체가 시그널)
+  /low_cmd      — sensor_msgs/JointState 수신 시 자동 RL_POLICY 진입 (v1.0.0)
+                  - effort = _cmd_tau (axesTorquesInput offset, 모드별 의미):
+                      CSP+RL : drive 위치 PID + cmd_tau (tau_offset feedforward)
+                      CST+RL : cmd_tau raw (drive 위치 무시, set_target_torques only)
+                  - 200ms 이상 dropout 시 자동 STANDBY 복귀
 
   [드라이브 모드 / 게인 관리]
   opmode        — 0=CSP / 1=CST (level+edge). 전환 시 q_cmd=q_a 동기화 + 반대 모드 자동 해제
@@ -93,6 +100,7 @@ TRAJ_FILE_DEFAULT  = '/home/jsh/ros2_ws/src/motorcortex_bridge/motorcortex_bridg
 TRAJ_DT_DEFAULT    = 0.005    # 200 Hz
 CMD_PERIOD         = 0.02    # 외부 명령 수신 주기 [s] (tracking 모드 기준, 50 Hz)
 HOLD_CYCLE         = 0.005   # 200 Hz (보간 루프 주기)
+RL_CMD_TIMEOUT     = 0.2     # RL_POLICY cmd dropout 한계 [s] (10 cycles of 50Hz)
 HOME_THRESHOLD_RAD = math.radians(0.01)  # 홈 판정 임계값 (0.01°)
 HOME_SPEED_DEG     = 10.0                # ★ 홈 복귀 속도 조정 [°/s] ← 이 값만 변경
 HOME_MAX_VEL       = math.radians(HOME_SPEED_DEG)        # [rad/s]
@@ -547,7 +555,8 @@ class MotionController:
         self._cmd_dq  = [0.0]  * N_AXES
         self._cmd_kp  = [20.0] * N_AXES
         self._cmd_kd  = [0.5]  * N_AXES
-        self._cmd_tau = [0.0]  * N_AXES
+        self._cmd_tau = [0.0]  * N_AXES   # axesTorquesInput offset (CSP+RL=tau_offset / CST+RL=tau_cmd)
+        self._last_cmd_time = 0.0         # /low_cmd 마지막 수신 시각 (RL_POLICY timeout 판정)
 
         # 이벤트 트리거 (GRID → Python Event)
         self._idle_ev          = threading.Event()   # JogMode=0 & PauseMode=0 전환
@@ -1249,6 +1258,7 @@ class MotionController:
         토크가 큰 값으로 즉시 방출되는 위험을 차단. 동작:
           - 모든 force 토글 OFF (_disable_mode_a + _disable_mode_b)
           - axesTorquesInput = 0 (잔여 토크 즉시 클리어)
+          - _cmd_tau = 0 (RL 잔여 명령 클리어, v1.0.0)
           - q_cmd = q_actual snap (위치 점프 방지)
           - STANDBY 전환
           - 로그 1회
@@ -1265,6 +1275,7 @@ class MotionController:
 
         cur = list(self._mcx.actual_positions[:N_AXES])
         with self._lock:
+            self._cmd_tau       = [0.0] * N_AXES   # RL_POLICY 잔여 cmd 클리어
             self._last_cmd_pos  = cur
             self._interp_prev   = cur
             self._interp_target = cur
@@ -1619,22 +1630,30 @@ class MotionController:
         """
         STANDBY    → last_cmd_pos 유지 (set_target_positions)
         STANDING   → last_cmd_pos 유지 (RL_POLICY / EXEC_TRAJ 대기)
-        RL_POLICY  → set_command() 50Hz 입력을 200Hz Hermite 보간
+        RL_POLICY  → /low_cmd 수신 자동 진입 (v1.0.0 mode-aware)
+                      CSP+RL: Hermite 위치 + cmd_tau (tau_offset feedforward)
+                      CST+RL: set_target_torques(cmd_tau) only (raw)
+                      timeout (RL_CMD_TIMEOUT=200ms) → STANDBY 복귀
         EXEC_TRAJ  → home_ev 감지 시 queue 클리어
                       wp 소모 → set_pos_and_torque(wp, tau) (mode flag 합성)
                       큐 소진 → force* 활성이면 idle, 아니면 STANDBY
-        CSP_IDLE   → q_cmd = stance, tau = tau_dyn
+        CSP_IDLE   → q_cmd = stance, tau =
                       + (forcePI ? J^T·(kp_imp·Δx − kd_imp·ẋ)         : 0)
-                      + (forcePF ? _cmd_tau                            : 0)
+                      + (forcePF ? tau_dyn                             : 0)   [v1.0.0]
                       + (forcePC ? J^T·(F_ref + kf·(F_ref − F̂_GRF))   : 0)
                       모든 CSP 토글 OFF → 토크 0, STANDBY
-        CST_IDLE   → q_cmd = q_actual (옵션 A), tau = tau_dyn
+        CST_IDLE   → q_cmd = q_actual (옵션 A), tau =
                       + (forceTJ ? kp_j·(stance − q_a) − kd_j·q̇        : 0)
-                      + (forceTF ? _cmd_tau                            : 0)
+                      + (forceTF ? tau_dyn                             : 0)   [v1.0.0]
                       + (forceTC ? J^T·(F_ref + kf·(F_ref − F̂_GRF))   : 0)
                       모든 CST 토글 OFF → 토크 0, STANDBY
         HOME       → move_to_home_additive()가 event_loop 스레드에서 직접 제어
                       완료 시 STANDBY
+
+        v1.0.0 변경:
+          - tau_dyn 항상 가산 제거 → forcePF/TF active 시에만 가산 ("Dynamic feedforward")
+          - forcePF/TF 의 외부 _cmd_tau 가산 제거 → RL_POLICY 만의 채널로 이동
+          - RL_POLICY 자동 진입 (/low_cmd 수신 시) + timeout 종료
         """
         zero_torque        = [0.0] * N_AXES
         x_a_prev           = np.zeros(3)
@@ -1680,20 +1699,65 @@ class MotionController:
                 except Exception:
                     pass
 
-            # ── RL_POLICY ─────────────────────────────────────────────────
+            # ── RL_POLICY (mode-aware, v1.0.0) ──────────────────────────
+            #   진입: /low_cmd 수신 자체 (set_command 가 auto-entry)
+            #   토크: _cmd_tau = axesTorquesInput offset
+            #     CSP+RL: Hermite 위치 + cmd_tau (tau_offset feedforward)
+            #     CST+RL: set_target_torques(cmd_tau) only (drive 위치 무시)
+            #   종료: cmd timeout (RL_CMD_TIMEOUT) → STANDBY
             elif state == 'RL_POLICY':
-                with self._lock:
-                    elapsed   = time.monotonic() - self._interp_time
-                    s         = min(elapsed / CMD_PERIOD, 1.0)
-                    positions = _hermite_pos(
-                        s, CMD_PERIOD,
-                        self._interp_prev, self._interp_target,
-                        self._interp_dq0,  self._interp_dq1,
-                    )
-                try:
-                    self._mcx.set_target_positions(positions)
-                except Exception:
-                    pass
+                # cmd timeout 검사 — publisher dropout / 종료 시 안전 복귀
+                if time.monotonic() - self._last_cmd_time > RL_CMD_TIMEOUT:
+                    try:
+                        self._mcx.set_target_torques(zero_torque)
+                    except Exception:
+                        pass
+                    cur = list(self._mcx.actual_positions[:N_AXES])
+                    with self._lock:
+                        self._cmd_tau       = [0.0] * N_AXES
+                        self._last_cmd_pos  = cur
+                        self._interp_prev   = cur
+                        self._interp_target = cur
+                    self._ctrl_state = 'STANDBY'
+                    if self._safety_log_cb:
+                        self._safety_log_cb('■ RL_POLICY timeout — STANDBY 복귀')
+                    slack = t_next - time.monotonic()
+                    if slack > 0:
+                        time.sleep(slack)
+                    continue
+
+                # SW joint safety limit (CST+RL runaway 차단)
+                q_a_arr = np.array(self._mcx.actual_positions[:N_AXES])
+                bad = self._check_joint_safety_limit(q_a_arr)
+                if bad >= 0:
+                    self._handle_limit_violation(q_a_arr, bad)
+                    slack = t_next - time.monotonic()
+                    if slack > 0:
+                        time.sleep(slack)
+                    continue
+
+                cmd_tau_list = list(self._cmd_tau)
+
+                if self._is_cst_mode():
+                    # CST+RL: tau = cmd_tau (raw, drive 위치 PID 없음)
+                    try:
+                        self._mcx.set_target_torques(cmd_tau_list)
+                    except Exception:
+                        pass
+                else:
+                    # CSP+RL: drive 위치 PID 가 Hermite qt 추종 + cmd_tau (tau_offset feedforward)
+                    with self._lock:
+                        elapsed   = time.monotonic() - self._interp_time
+                        s         = min(elapsed / CMD_PERIOD, 1.0)
+                        positions = _hermite_pos(
+                            s, CMD_PERIOD,
+                            self._interp_prev, self._interp_target,
+                            self._interp_dq0,  self._interp_dq1,
+                        )
+                    try:
+                        self._mcx.set_pos_and_torque(positions, cmd_tau_list)
+                    except Exception:
+                        pass
 
             # ── EXEC_TRAJ ────────────────────────────────────────────────
             elif state == 'EXEC_TRAJ':
@@ -1757,7 +1821,8 @@ class MotionController:
                         # 드라이브 측정 관절속도 [rad/s] (필터링됨, backward diff 회피)
                         dq_a = np.array(self._mcx.actual_velocities[:N_AXES])
 
-                        tau_arr = tau_dyn.copy()
+                        # v1.0.0: tau_dyn always-on 제거, forcePF/TF (ff_active) 안으로 이동
+                        tau_arr = np.zeros(N_AXES)
 
                         # Cartesian impedance (CSP / forcePI)
                         if cart_active:
@@ -1785,9 +1850,9 @@ class MotionController:
                         if contact_active:
                             tau_arr = tau_arr + compute_contact_torque(q_now_phy, self.contact_force_ref)
 
-                        # τ_ff_ext — forcePF (CSP) or forceTF (CST) 활성 시
+                        # Dynamic feedforward — forcePF (CSP) or forceTF (CST) 활성 시 tau_dyn 가산
                         if ff_active:
-                            tau_arr = tau_arr + np.array(self._cmd_tau, dtype=float)
+                            tau_arr = tau_arr + tau_dyn
 
                         tau = tau_arr.tolist()
                     else:
@@ -1830,16 +1895,17 @@ class MotionController:
                                        else (x_a - x_a_prev) / HOLD_CYCLE)
                     x_a_prev        = x_a.copy()
 
-                    tau_arr = tau_dyn.copy()
+                    # v1.0.0: tau_dyn always-on 제거, forcePF 안으로 이동
+                    tau_arr = np.zeros(N_AXES)
 
                     # forcePI — Cartesian impedance (J^T·f_cart)
                     if self._force_pi_active:
                         f_cart = self.kp_imp * (x_r - x_a) - self.kd_imp * dx_a
                         tau_arr = tau_arr + J.T @ f_cart
 
-                    # forcePF — CSP τ_ff (외부 명령 _cmd_tau)
+                    # forcePF — CSP Dynamic feedforward (tau_dyn 가산)
                     if self._force_pf_active:
-                        tau_arr = tau_arr + np.array(self._cmd_tau, dtype=float)
+                        tau_arr = tau_arr + tau_dyn
 
                     # forcePC — GRF FF+FB
                     if self._force_pc_active:
@@ -1877,16 +1943,17 @@ class MotionController:
                     x_a, J, tau_dyn = _fun_force_f(q_now_phy)
                     dq_a = np.array(self._mcx.actual_velocities[:N_AXES])
 
-                    tau_arr = tau_dyn.copy()
+                    # v1.0.0: tau_dyn always-on 제거, forceTF 안으로 이동
+                    tau_arr = np.zeros(N_AXES)
 
                     # forceTJ — Joint impedance PD (stance 기준)
                     if self._force_tj_active:
                         q_r_arr = np.array(self._stance_q_r_mcx)
                         tau_arr = tau_arr + self.kp_joint * (q_r_arr - q_a_arr) - self.kd_joint * dq_a
 
-                    # forceTF — CST τ_ff (외부 명령 _cmd_tau)
+                    # forceTF — CST Dynamic feedforward (tau_dyn 가산)
                     if self._force_tf_active:
-                        tau_arr = tau_arr + np.array(self._cmd_tau, dtype=float)
+                        tau_arr = tau_arr + tau_dyn
 
                     # forceTC — GRF FF+FB
                     if self._force_tc_active:
@@ -2122,40 +2189,59 @@ class MotionController:
 
     # ── tracking 모드: 외부 명령 수신 ─────────────────────────────────────────
     def set_command(self,
-                    q:   list,
+                    q:   list = None,
                     dq:  list = None,
                     kp:  list = None,
                     kd:  list = None,
                     tau: list = None):
-        """
-        외부 제어기(RL 등) 명령 수신.
+        """외부 제어기 (RL 등) 명령 수신.
 
-        - _cmd_dq / _cmd_kp / _cmd_kd / _cmd_tau 는 모든 state 에서 갱신
-          (forceTF / forcePF τ_ff 채널이 모든 idle/EXEC_TRAJ 에서 _cmd_tau 소비)
-        - 위치 추종 보간 상태 (_last_cmd_pos / _interp_*) 는 RL_POLICY 에서만 갱신
-          → 다른 state 에서 외부 q 가 들어와도 STANDBY/idle 위치 점프 차단
+        v1.0.0 부터 /low_cmd 수신 자체가 RL_POLICY 진입 시그널 (auto-entry).
+        다른 force* 토글은 진입 시 자동 비활성 — RL 정책이 풀 control authority.
+
+        _cmd_tau 의미 (motorcortex axesTorquesInput == target torque offset):
+          CSP+RL 시: tau_offset (drive 위치 PID 위의 feedforward)
+          CST+RL 시: tau_cmd     (drive base ≈ 0 → 사실상 absolute torque)
 
         Parameters
         ----------
-        q   : target joint positions  [rad]   (4축, 필수)
+        q   : target joint positions  [rad]   (선택; CSP+RL 에서 의미, CST+RL 에서 무관)
         dq  : target joint velocities [rad/s] (선택)
         kp  : position gains                  (선택)
         kd  : velocity gains                  (선택)
-        tau : feedforward torques     [Nm]    (선택, τ_ff 채널)
+        tau : target torque offset    [Nm]    (선택, _cmd_tau 채널)
         """
+        now = time.monotonic()
         with self._lock:
-            # τ_ff 등 modifier 채널 — 모든 state 에서 수신
+            # _cmd_tau 등 modifier 채널 — 모든 state 에서 수신
             self._cmd_dq  = list(dq)  if dq  is not None else [0.0]  * N_AXES
             self._cmd_kp  = list(kp)  if kp  is not None else [20.0] * N_AXES
             self._cmd_kd  = list(kd)  if kd  is not None else [0.5]  * N_AXES
             self._cmd_tau = list(tau) if tau is not None else [0.0]  * N_AXES
+            self._last_cmd_time = now
 
-            # RL_POLICY 가 아니면 위치 추종 보간 상태 갱신 안 함
+            # 자동 RL_POLICY 진입 (다른 state 에서 첫 cmd 수신 시)
             if self._ctrl_state != 'RL_POLICY':
+                # 다른 force* 토글 자동 비활성 + GRID sync (옵션 A 정합)
+                self._disable_mode_a()
+                self._disable_mode_b()
+                self._ctrl_state = 'RL_POLICY'
+                # 보간 시작점 = 현재 actual (점프 방지)
+                actual = list(self._mcx.actual_positions[:N_AXES])
+                self._last_cmd_pos  = list(actual)
+                self._interp_prev   = list(actual)
+                self._interp_target = list(actual)
+                self._interp_dq0    = [0.0] * N_AXES
+                self._interp_dq1    = [0.0] * N_AXES
+                self._interp_time   = now
+                if self._safety_log_cb:
+                    self._safety_log_cb('▶ RL_POLICY 자동 진입 (/low_cmd 수신)')
+
+            # q=None 이면 위치 보간 갱신 안 함 (CST+RL 시나리오 — effort 만 받음)
+            if q is None or len(q) < N_AXES:
                 return
 
-            now = time.monotonic()
-            # 현재 Hermite 진행률로 시작점·속도 갱신 (C1 연속 보장)
+            # 현재 Hermite 진행률로 시작점·속도 갱신 (C1 연속)
             elapsed = now - self._interp_time
             s = min(elapsed / CMD_PERIOD, 1.0)
             cur_pos = _hermite_pos(
@@ -2168,16 +2254,15 @@ class MotionController:
                 self._interp_prev, self._interp_target,
                 self._interp_dq0,  self._interp_dq1,
             )
-            # 새 구간 끝 속도: RL 명령 차분으로 추정
             new_dq1 = [(q[i] - self._interp_target[i]) / CMD_PERIOD
                        for i in range(N_AXES)]
 
             self._interp_prev   = cur_pos
             self._interp_dq0    = cur_vel
-            self._interp_target = list(q)
+            self._interp_target = list(q[:N_AXES])
             self._interp_dq1    = new_dq1
             self._interp_time   = now
-            self._last_cmd_pos  = list(q)
+            self._last_cmd_pos  = list(q[:N_AXES])
 
     def get_monitor_snapshot(self) -> list:
         """모니터 로그용: [(tgt_rad, act_rad), ...] for ch0~ch3."""
