@@ -7,3 +7,13 @@ src/log/
 **/__pycache__/
 **/*.pyc
 **/*.egg-info/
+
+# Editor / IDE
+.omc/
+.vscode/
+.idea/
+**/.omc/
+
+# MuJoCo runtime
+MUJOCO_LOG.TXT
+**/MUJOCO_LOG.TXT

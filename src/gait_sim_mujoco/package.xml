@@ -1,0 +1,20 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>gait_sim_mujoco</name>
+  <version>0.1.0</version>
+  <description>gait_sim MuJoCo sim node — motorcortex_bridge 와 동일 ROS2 토픽 인터페이스 (sim/real swap 가능)</description>
+  <maintainer email="TODO@email.com">jsh</maintainer>
+  <license>BSD</license>
+
+  <buildtool_depend>ament_python</buildtool_depend>
+
+  <depend>rclpy</depend>
+  <depend>sensor_msgs</depend>
+  <depend>std_msgs</depend>
+  <depend>geometry_msgs</depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

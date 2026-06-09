@@ -1,0 +1,15 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>biped_sim</name>
+  <version>0.1.0</version>
+  <description>Biped (HL/HR 2-leg) MuJoCo ROS2 sim node — unitree_mujoco-style</description>
+  <maintainer email="jeong.sunghun@rgarobot.com">jsh</maintainer>
+  <license>BSD</license>
+  <depend>rclpy</depend>
+  <depend>sensor_msgs</depend>
+  <depend>std_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>
